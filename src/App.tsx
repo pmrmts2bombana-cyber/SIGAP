@@ -1063,6 +1063,10 @@ export default function App() {
       setShowCelebration(false);
     }, 3000);
   };
+
+  const triggerError = (title: string, message: string) => {
+    alert(`${title}: ${message}`);
+  };
   const [mobileExtraMenuOpen, setMobileExtraMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showJadwalModal, setShowJadwalModal] = useState(false);
@@ -1450,6 +1454,7 @@ export default function App() {
     setFilterNamaAbsensi('');
     setFilterAdminSiswaClass('');
     setStudentProfileClassFilter('');
+    setAnalysisClass('');
     
     // Reset pagination
     setPagination({ 
@@ -1467,7 +1472,7 @@ export default function App() {
     setTimeout(() => {
       setRefreshing(false);
       setLoading(false);
-      triggerSuccess("DISEMBUR", "Sinkronisasi data terbaru berhasil dilakukan.");
+      triggerSuccess("DIPERBARUI", "Sinkronisasi data terbaru berhasil dilakukan. Semua filter telah direset.");
     }, 1000);
   };
 
@@ -1707,9 +1712,9 @@ export default function App() {
             });
           });
           await Promise.all(promises);
-          alert(`Sukses mengimpor ${data.length} data ${type}`);
+          triggerSuccess("BERHASIL", `Sukses mengimpor ${data.length} data ${type}. Data akan muncul otomatis di tabel.`);
         } catch (err) {
-          alert("Gagal mengimpor data. Cek format template!");
+          triggerError("GAGAL", "Gagal mengimpor data. Pastikan format template sesuai dan data tidak duplikat.");
         } finally {
           toggleLoader(false);
         }
@@ -1790,6 +1795,7 @@ export default function App() {
         items.push({ id: 'absensi-wali', label: 'Riwayat Kehadiran', icon: ClipboardList });
         items.push({ id: 'rekap', label: 'Laporan Rekap', icon: FileBarChart });
         items.push({ id: 'rekap-mapel', label: 'Rekap Mapel', icon: ClipboardList });
+        items.push({ id: 'analisis', label: 'Analisis Kehadiran', icon: BarChart3 });
       } else {
         items.push({ id: 'rekap-mapel', label: 'Rekap Mapel', icon: ClipboardList });
       }
@@ -1873,7 +1879,8 @@ export default function App() {
       await firestoreService.saveSiswa(editingSiswa);
       setShowSiswaModal(false);
       setEditingSiswa(null);
-      triggerSuccess("BERHASIL", "Data siswa telah berhasil disimpan ke database.");
+      setSearchTermSiswa(''); // Reset search to show newcomer
+      triggerSuccess("BERHASIL", "Data siswa telah berhasil disimpan. Data akan muncul otomatis di daftar.");
     } catch (e) {
       alert("Gagal menyimpan data.");
     } finally {
@@ -1915,7 +1922,8 @@ export default function App() {
       await firestoreService.saveGuru(cleanedGuru);
       setShowGuruModal(false);
       setEditingGuru(null);
-      triggerSuccess("BERHASIL", "Data guru dan akun akses telah diperbarui.");
+      setSearchTermGuru(''); // Reset search to show latest data
+      triggerSuccess("BERHASIL", "Data guru dan akun akses telah diperbarui. Perubahan akan muncul otomatis.");
     } catch (e) {
       alert("Gagal menyimpan data.");
     } finally {
@@ -1950,7 +1958,8 @@ export default function App() {
       await firestoreService.saveKelas(editingKelas);
       setShowKelasModal(false);
       setEditingKelas(null);
-      triggerSuccess("BERHASIL", `Kelas ${editingKelas.nama} berhasil disimpan.`);
+      setSearchTermKelas(''); // Reset search
+      triggerSuccess("BERHASIL", `Kelas ${editingKelas.nama} berhasil disimpan dan sinkron.`);
     } catch (e) {
       alert("Gagal menyimpan data.");
     } finally {
@@ -3140,7 +3149,7 @@ export default function App() {
                     </thead>
                     <tbody className="divide-y divide-gray-50">
                       {filteredSiswa.filter(s => filterAdminSiswaClass ? s.kelas === filterAdminSiswaClass : true).slice(pagination.siswa, pagination.siswa + pageSize).map((s, i) => (
-                        <tr key={i} className="hover:bg-gray-50 transition-colors group">
+                        <tr key={s.nisn} className="hover:bg-gray-50 transition-colors group">
                           <td className="px-6 py-4 text-center font-bold text-gray-400 text-xs">{pagination.siswa + i + 1}</td>
                           <td className="px-6 py-4">
                           {s.foto ? (
@@ -3217,7 +3226,8 @@ export default function App() {
                       {classrooms.length > 0 ? (
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={classrooms.filter(c => analysisClass ? c.nama === analysisClass : true).map(c => {
-                            const classAttendance = (attendance || []).filter(a => a.kelas === c.nama && a.tanggal.startsWith(new Date().toISOString().slice(0, 7)));
+                            const currentMonthPrefix = currentDate.slice(0, 7);
+                            const classAttendance = (attendance || []).filter(a => a.kelas === c.nama && a.tanggal.startsWith(currentMonthPrefix));
                             const totalSiswa = (students || []).filter(s => s.kelas === c.nama).length;
                             const daysInMonth = 25; 
                             const totalPeluang = totalSiswa * daysInMonth;
@@ -3515,7 +3525,7 @@ export default function App() {
                     </thead>
                       <tbody className="divide-y divide-gray-50">
                         {filteredGuru.slice(pagination.guru, pagination.guru + pageSize).map((g, i) => (
-                          <tr key={i} className="hover:bg-gray-50 transition-colors">
+                          <tr key={g.nip} className="hover:bg-gray-50 transition-colors">
                             <td className="px-6 py-4 text-center font-bold text-gray-400 text-xs">{pagination.guru + i + 1}</td>
                             <td className="px-6 py-4">
                               <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center overflow-hidden border">
@@ -3708,7 +3718,7 @@ export default function App() {
                             const today = new Date().toISOString().split('T')[0];
                             const current = attendance.find(a => a.nisn === s.nisn && a.tanggal === today);
                             return (
-                              <tr key={i} className="hover:bg-gray-50 transition-colors">
+                              <tr key={s.nisn} className="hover:bg-gray-50 transition-colors">
                                 <td className="px-6 py-4 text-center font-bold text-gray-400 text-xs">{i + 1}</td>
                                 <td className="px-6 py-4">
                                   <p className="font-bold">{s.nama}</p>
@@ -3899,7 +3909,7 @@ export default function App() {
                       })
                       .sort((a, b) => b.tanggal.localeCompare(a.tanggal) || b.jam.localeCompare(a.jam))
                       .slice(pagination.absensiSiswa, pagination.absensiSiswa + pageSize).map((a, i) => (
-                      <tr key={i} className="hover:bg-gray-50 transition-colors">
+                      <tr key={a.id} className="hover:bg-gray-50 transition-colors">
                         <td className="px-6 py-4 text-center font-bold text-gray-400 text-xs">{pagination.absensiSiswa + i + 1}</td>
                         <td className="px-6 py-4 font-medium">{a.tanggal}</td>
                         <td className="px-6 py-4">
@@ -4012,7 +4022,7 @@ export default function App() {
                   </thead>
                     <tbody className="divide-y divide-gray-50">
                     {teacherAttendance.slice(pagination.absensiGuru, pagination.absensiGuru + pageSize).map((a, i) => (
-                      <tr key={i} className="hover:bg-gray-50 transition-colors">
+                      <tr key={a.id} className="hover:bg-gray-50 transition-colors">
                         <td className="px-6 py-4 text-center font-bold text-gray-400 text-xs">{pagination.absensiGuru + i + 1}</td>
                         <td className="px-6 py-4 text-gray-400 font-mono font-bold">{a.nip}</td>
                         <td className="px-6 py-4 font-bold">{a.nama}</td>
