@@ -1623,18 +1623,30 @@ export default function App() {
         </div>
 
         <div className="p-8">
-          <div className="flex bg-gray-100 p-1 rounded-xl mb-6">
-            {(['Siswa', 'Guru', 'Admin'] as const).map(role => (
-              <button
-                key={role}
-                disabled={loading}
-                onClick={() => setLoginRole(role)}
-                className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${loginRole === role ? 'bg-white text-green-800 shadow-sm' : 'text-gray-500'}`}
-              >
-                {role}
-              </button>
-            ))}
-          </div>
+          {(() => {
+            const appRole = import.meta.env.VITE_APP_ROLE || 'staff';
+            const roles = (['Siswa', 'Guru', 'Admin'] as const).filter(r => {
+              if (appRole === 'student') return r === 'Siswa';
+              return true;
+            });
+
+            if (roles.length <= 1) return null;
+
+            return (
+              <div className="flex bg-gray-100 p-1 rounded-xl mb-6">
+                {roles.map(role => (
+                  <button
+                    key={role}
+                    disabled={loading}
+                    onClick={() => setLoginRole(role)}
+                    className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${loginRole === role ? 'bg-white text-green-800 shadow-sm' : 'text-gray-500'}`}
+                  >
+                    {role}
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
 
           <div className="space-y-4">
             {loginRole === 'Siswa' ? (
