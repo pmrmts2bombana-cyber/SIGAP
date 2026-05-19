@@ -250,15 +250,18 @@ export default function App() {
 
     // Real-time sync for other entities
     const unsubStudents = onSnapshot(collection(db, 'students'), (snap) => {
-      setStudents(snap.docs.map(d => ({ nisn: d.id, ...d.data() } as Student)));
+      const data = snap.docs.map(d => ({ nisn: d.id, ...d.data() } as Student));
+      setStudents(data.sort((a, b) => a.nama.localeCompare(b.nama)));
     });
 
     const unsubTeachers = onSnapshot(collection(db, 'teachers'), (snap) => {
-      setTeachers(snap.docs.map(d => ({ nip: d.id, ...d.data() } as Teacher)));
+      const data = snap.docs.map(d => ({ nip: d.id, ...d.data() } as Teacher));
+      setTeachers(data.sort((a, b) => a.nama.localeCompare(b.nama)));
     });
 
     const unsubClassrooms = onSnapshot(collection(db, 'classrooms'), (snap) => {
-      setClassrooms(snap.docs.map(d => d.data() as Classroom));
+      const data = snap.docs.map(d => d.data() as Classroom);
+      setClassrooms(data.sort((a, b) => a.nama.localeCompare(b.nama)));
     });
 
     const unsubSettings = onSnapshot(collection(db, 'settings'), (snap) => {
@@ -266,7 +269,8 @@ export default function App() {
     });
 
     const unsubHolidays = onSnapshot(collection(db, 'holidays'), (snap) => {
-      setHolidays(snap.docs.map(d => d.data() as Holiday));
+      const data = snap.docs.map(d => d.data() as Holiday);
+      setHolidays(data.sort((a, b) => b.tanggal.localeCompare(a.tanggal)));
     });
 
     const unsubSchedules = onSnapshot(collection(db, 'teachingSchedules'), (snap) => {
@@ -1037,6 +1041,20 @@ export default function App() {
   const [editingGuru, setEditingGuru] = useState<any | null>(null);
   const [showKelasModal, setShowKelasModal] = useState(false);
   const [editingKelas, setEditingKelas] = useState<any | null>(null);
+  const [showSuccessToast, setShowSuccessToast] = useState<{title: string, message: string} | null>(null);
+  const [newLibur, setNewLibur] = useState({ tanggal: '', keterangan: '' });
+
+  const [showCelebration, setShowCelebration] = useState(false);
+
+  const triggerSuccess = (title: string, message: string) => {
+    setShowSuccessToast({ title, message });
+    setShowCelebration(true);
+    setPagination({ guru: 0, siswa: 0, kelas: 0, jadwal: 0, absensiSiswa: 0, absensiGuru: 0, rekapMapel: 0 });
+    setTimeout(() => {
+      setShowSuccessToast(null);
+      setShowCelebration(false);
+    }, 3000);
+  };
   const [mobileExtraMenuOpen, setMobileExtraMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showJadwalModal, setShowJadwalModal] = useState(false);
@@ -1820,7 +1838,7 @@ export default function App() {
       await firestoreService.saveSiswa(editingSiswa);
       setShowSiswaModal(false);
       setEditingSiswa(null);
-      alert("Data siswa berhasil disimpan.");
+      triggerSuccess("BERHASIL", "Data siswa telah berhasil disimpan ke database.");
     } catch (e) {
       alert("Gagal menyimpan data.");
     } finally {
@@ -1854,13 +1872,15 @@ export default function App() {
     // Ensure kelas is only for Wali Kelas
     const cleanedGuru = {
       ...editingGuru,
+      jabatan: editingGuru.jabatan || 'Guru',
+      role: editingGuru.role || 'Guru',
       kelas: editingGuru.jabatan === 'Guru Wali Kelas' ? editingGuru.kelas : ''
     };
     try {
       await firestoreService.saveGuru(cleanedGuru);
       setShowGuruModal(false);
       setEditingGuru(null);
-      alert("Data guru berhasil disimpan.");
+      triggerSuccess("BERHASIL", "Data guru dan akun akses telah diperbarui.");
     } catch (e) {
       alert("Gagal menyimpan data.");
     } finally {
@@ -1895,7 +1915,7 @@ export default function App() {
       await firestoreService.saveKelas(editingKelas);
       setShowKelasModal(false);
       setEditingKelas(null);
-      alert("Data kelas berhasil disimpan.");
+      triggerSuccess("BERHASIL", `Kelas ${editingKelas.nama} berhasil disimpan.`);
     } catch (e) {
       alert("Gagal menyimpan data.");
     } finally {
@@ -2141,7 +2161,7 @@ export default function App() {
       );
       setShowJadwalModal(false);
       setTeachingSessions([]);
-      alert("Jadwal mengajar berhasil diperbarui!");
+      triggerSuccess("BERHASIL", "Konfigurasi jam mengajar telah diperbarui.");
     } catch (e) {
       alert("Gagal menyimpan jadwal.");
     } finally {
@@ -2548,6 +2568,35 @@ export default function App() {
       });
     }
   }, [currentSiswaData]);
+
+  const renderSuccessToast = () => (
+    <AnimatePresence>
+      {showSuccessToast && (
+        <motion.div 
+          initial={{ opacity: 0, y: 100, scale: 0.8 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 20, scale: 0.8 }}
+          className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[300] bg-zinc-900 border border-zinc-800 text-white px-8 py-4 rounded-[2rem] shadow-2xl flex items-center gap-4 min-w-[300px]"
+        >
+          <div className="bg-green-500 p-2 rounded-xl text-white">
+            <CheckCircle2 size={24} />
+          </div>
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 leading-none mb-1">{showSuccessToast.title}</p>
+            <p className="text-sm font-bold">{showSuccessToast.message}</p>
+          </div>
+          <div className="absolute bottom-0 left-0 right-0 h-1 overflow-hidden rounded-b-[2rem]">
+             <motion.div 
+               initial={{ width: "100%" }}
+               animate={{ width: "0%" }}
+               transition={{ duration: 3, ease: "linear" }}
+               className="h-full bg-green-500"
+             />
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
 
   if (!session) return renderLogin();
 
@@ -3403,7 +3452,7 @@ export default function App() {
                           <td className="px-6 py-4 text-gray-600 font-medium">{g.user}</td>
                           <td className="px-6 py-4">
                             <div className="flex gap-2">
-                               <button onClick={() => { setEditingGuru({ nip: g.nip, nama: g.nama, kelas: g.kelas, user: g.user, pass: g.pass, role: g.role, foto: g.foto }); setShowGuruModal(true); }} className="text-blue-500 hover:text-blue-800"><Edit size={16} /></button>
+                               <button onClick={() => { setEditingGuru({ nip: g.nip, nama: g.nama, jabatan: g.jabatan, kelas: g.kelas, user: g.user, pass: g.pass, role: g.role, foto: g.foto }); setShowGuruModal(true); }} className="text-blue-500 hover:text-blue-800"><Edit size={16} /></button>
                                <button onClick={() => handleDeleteGuru(g.nip, g.nama)} className="text-red-500 hover:text-red-800"><Trash2 size={16} /></button>
                             </div>
                           </td>
@@ -4543,18 +4592,32 @@ export default function App() {
 
                   <div className="bg-gray-50 p-4 rounded-2xl border-2 border-dashed border-gray-200">
                     <div className="space-y-3">
-                      <input id="new-libur-tgl" type="date" className="w-full bg-white border-0 rounded-xl px-4 py-2 text-sm font-bold shadow-sm" />
-                      <input id="new-libur-ket" type="text" placeholder="Keterangan Libur" className="w-full bg-white border-0 rounded-xl px-4 py-2 text-sm font-bold shadow-sm" />
+                      <input 
+                        type="date" 
+                        value={newLibur.tanggal}
+                        onChange={e => setNewLibur({...newLibur, tanggal: e.target.value})}
+                        className="w-full bg-white border-0 rounded-xl px-4 py-2 text-sm font-bold shadow-sm" 
+                      />
+                      <input 
+                        type="text" 
+                        placeholder="Keterangan Libur" 
+                        value={newLibur.keterangan}
+                        onChange={e => setNewLibur({...newLibur, keterangan: e.target.value})}
+                        className="w-full bg-white border-0 rounded-xl px-4 py-2 text-sm font-bold shadow-sm" 
+                      />
                       <button 
                         onClick={async () => {
-                          const tglInput = document.getElementById('new-libur-tgl') as HTMLInputElement;
-                          const ketInput = document.getElementById('new-libur-ket') as HTMLInputElement;
-                          const tgl = tglInput.value;
-                          const ket = ketInput.value;
-                          if (!tgl || !ket) return;
-                          await firestoreService.saveLiburAgenda(tgl, ket);
-                          tglInput.value = '';
-                          ketInput.value = '';
+                          if (!newLibur.tanggal || !newLibur.keterangan) return;
+                          toggleLoader(true);
+                          try {
+                            await firestoreService.saveLiburAgenda(newLibur.tanggal, newLibur.keterangan);
+                            setNewLibur({ tanggal: '', keterangan: '' });
+                            triggerSuccess("BERHASIL", "Hari libur ditambahkan.");
+                          } catch (e) {
+                            alert("Gagal menyimpan.");
+                          } finally {
+                            toggleLoader(false);
+                          }
                         }}
                         className="w-full bg-red-600 text-white rounded-xl py-2 font-bold hover:bg-red-500 transition-all text-xs"
                       >
@@ -5215,6 +5278,29 @@ export default function App() {
 
         </AnimatePresence>
         {renderSessionDetailModal()}
+        {renderSuccessToast()}
+        <AnimatePresence>
+          {showCelebration && (
+             <motion.div 
+               initial={{ opacity: 0 }}
+               animate={{ opacity: 1 }}
+               exit={{ opacity: 0 }}
+               className="fixed inset-0 z-[400] flex items-center justify-center pointer-events-none px-4"
+             >
+                <motion.div 
+                  initial={{ scale: 0, rotate: -20 }}
+                  animate={{ scale: [0, 1.2, 1], rotate: [0, 5, -5, 0] }}
+                  className="bg-white/95 backdrop-blur-xl p-10 md:p-14 rounded-[3rem] md:rounded-[4rem] shadow-[0_0_100px_rgba(0,0,0,0.1)] border-4 border-green-500 flex flex-col items-center text-center"
+                >
+                   <div className="bg-green-100 p-6 rounded-full mb-6 shadow-inner">
+                      <Sparkles className="text-green-600" size={64} />
+                   </div>
+                   <h2 className="text-2xl md:text-4xl font-black text-green-950 uppercase tracking-tighter">DATA BERHASIL DISIMPAN</h2>
+                   <p className="text-xs md:text-sm font-bold text-zinc-500 mt-2 uppercase tracking-widest">Sinkronisasi Real-time Berhasil</p>
+                </motion.div>
+             </motion.div>
+          )}
+        </AnimatePresence>
         <ConfirmModal />
       </main>
     </div>
