@@ -167,6 +167,15 @@ export const firestoreService = {
     }
   },
 
+  hapusAbsensiGuru: async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'teacherAttendance', id));
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, `teacherAttendance/${id}`);
+      throw e;
+    }
+  },
+
   // Scan Logic
   processScan: async (nisn: string) => {
     try {

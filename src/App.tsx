@@ -14,7 +14,7 @@ import {
   ChevronRight, ChevronLeft, ClipboardList, FileBarChart, Table as TableIcon, Search, Plus, 
   RefreshCcw, Printer, Download, Eye, EyeOff, Calendar, Clock, Trash2, Edit, Save,
   ArrowLeft, Upload, FileSpreadsheet, BarChart3, Info, CheckCircle2, XCircle, AlertTriangle, AlertCircle,
-  Maximize2, CreditCard, Award, ExternalLink, ShieldCheck, Sparkles
+  Maximize2, CreditCard, Award, ExternalLink, ShieldCheck, Sparkles, Heart
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { firestoreService } from './services/firestoreService';
@@ -516,6 +516,61 @@ export default function App() {
 
           <p className="mt-8 text-[11px] font-bold text-zinc-400 italic">
             *Anda akan diarahkan ke tab baru secara aman. Gunakan akun SIGAP Anda untuk sinkronisasi data.
+          </p>
+        </div>
+      </div>
+    );
+  };
+
+  const renderKBC = () => {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[500px] bg-white rounded-[3rem] p-12 shadow-2xl border border-rose-50 text-center relative overflow-hidden">
+        {/* Background Decorative Elements */}
+        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-rose-400 via-pink-500 to-red-600"></div>
+        <div className="absolute -top-24 -right-24 w-64 h-64 bg-rose-50 rounded-full blur-3xl opacity-50"></div>
+        <div className="absolute -bottom-24 -left-24 w-64 h-64 bg-pink-50 rounded-full blur-3xl opacity-50"></div>
+
+        <div className="relative z-10 max-w-lg mx-auto">
+          <motion.div 
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="w-24 h-24 bg-gradient-to-br from-rose-500 to-pink-600 rounded-[2.5rem] flex items-center justify-center mb-8 mx-auto shadow-lg shadow-rose-200"
+          >
+            <Heart className="text-white fill-white/20" size={44} />
+          </motion.div>
+
+          <h3 className="text-3xl font-black text-gray-900 uppercase tracking-tighter mb-4">
+            SIGAP <span className="text-rose-600">KBC</span>
+          </h3>
+          
+          <p className="text-sm font-bold text-gray-500 mb-10 leading-relaxed">
+            Aplikasi administrasi guru berbasis Kurikulum Berbasis Cinta (KBC). 
+            Klik tombol di bawah untuk diarahkan ke platform aplikasi KBC.
+          </p>
+
+          <div className="space-y-4">
+            <motion.a 
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              href="https://kbc-ecru.vercel.app/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full bg-zinc-900 text-white rounded-[2rem] py-6 px-8 font-black uppercase tracking-widest shadow-xl hover:bg-zinc-800 transition-all flex items-center justify-center gap-4 group cursor-pointer no-underline"
+            >
+              <ExternalLink size={24} className="text-rose-400 group-hover:rotate-12 transition-transform" />
+              Buka Aplikasi KBC
+            </motion.a>
+
+            <div className="flex items-center justify-center gap-2 py-3 px-6 bg-zinc-50 rounded-2xl border border-zinc-100">
+              <ShieldCheck size={16} className="text-green-600" />
+              <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">
+                Akses Terproteksi (Sesi Aktif)
+              </span>
+            </div>
+          </div>
+
+          <p className="mt-8 text-[11px] font-bold text-zinc-400 italic">
+            *Anda akan diarahkan ke tab baru secara aman. Pastikan Anda tetap login di sistem SIGAP.
           </p>
         </div>
       </div>
@@ -1860,6 +1915,9 @@ export default function App() {
       } else {
         items.push({ id: 'rekap-mapel', label: 'Rekap Mapel', icon: ClipboardList });
       }
+
+      items.push({ id: 'kbc', label: 'KBC', icon: Heart });
+
       return items;
     } else {
       return [
@@ -4114,6 +4172,7 @@ export default function App() {
                       <th className="px-6 py-4">Kelas Mengajar</th>
                       <th className="px-6 py-4">Hari/Tanggal</th>
                       <th className="px-6 py-4">Jam Scan</th>
+                      {session?.role === 'Admin' && <th className="px-6 py-4 text-center">Opsi</th>}
                     </tr>
                   </thead>
                     <tbody className="divide-y divide-gray-50">
@@ -4126,10 +4185,31 @@ export default function App() {
                         <td className="px-6 py-4"><span className="bg-green-100 text-green-800 px-2 py-0.5 rounded text-[10px] font-bold">{a.kelas}</span></td>
                         <td className="px-6 py-4 font-medium text-gray-600">{formatIndoDate(a.tanggal)}</td>
                         <td className="px-6 py-4 font-bold">{a.jam}</td>
+                        {session?.role === 'Admin' && (
+                          <td className="px-6 py-4 text-center">
+                            <button 
+                              onClick={async () => {
+                                if (window.confirm(`Hapus data absensi guru ${a.nama}?`)) {
+                                  toggleLoader(true);
+                                  try {
+                                    await firestoreService.hapusAbsensiGuru(a.id);
+                                  } catch (err) {
+                                    alert("Gagal menghapus data.");
+                                  } finally {
+                                    toggleLoader(false);
+                                  }
+                                }
+                              }}
+                              className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition-all"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     ))}
                     {teacherAttendance.length === 0 && (
-                      <tr><td colSpan={6} className="text-center py-8 text-gray-400">Belum ada data mengajar hari ini.</td></tr>
+                      <tr><td colSpan={session?.role === 'Admin' ? 8 : 7} className="text-center py-8 text-gray-400 font-medium italic">Belum ada data mengajar hari ini.</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -4520,6 +4600,8 @@ export default function App() {
           {activePanel === 'capaian-guru' && renderLaporanCapaianGuru()}
 
           {activePanel === 'roster' && renderRoster()}
+
+          {activePanel === 'kbc' && renderKBC()}
 
           {activePanel === 'profil-siswa' && renderProfilSiswa()}
 
