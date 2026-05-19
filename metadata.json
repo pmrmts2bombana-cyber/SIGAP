@@ -1,0 +1,10 @@
+{
+  "name": "Remix: SIGAP MTsN 2 Bombana",
+  "description": "Sistem Informasi dan Absensi Pelajar Madrasah untuk MTsN 2 Bombana dengan fitur absensi siswa, guru, dan manajemen data madrasah.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

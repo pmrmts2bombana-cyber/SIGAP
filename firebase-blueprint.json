@@ -1,0 +1,164 @@
+{
+  "entities": {
+    "Student": {
+      "title": "Student",
+      "description": "Information about a madrasah student",
+      "type": "object",
+      "properties": {
+        "nisn": { "type": "string", "description": "National Student ID Number" },
+        "nama": { "type": "string", "description": "Full name" },
+        "jenisKelamin": { "type": "string", "enum": ["L", "P"], "description": "Gender" },
+        "tempat": { "type": "string", "description": "Birth place" },
+        "tgl": { "type": "string", "description": "Birth date" },
+        "kelas": { "type": "string", "description": "Class name" },
+        "ayah": { "type": "string", "description": "Father's name" },
+        "ibu": { "type": "string", "description": "Mother's name" },
+        "hp": { "type": "string", "description": "Parent's phone number" }
+      },
+      "required": ["nisn", "nama", "kelas", "jenisKelamin"]
+    },
+    "Teacher": {
+      "title": "Teacher",
+      "description": "Madrasah teacher or admin",
+      "type": "object",
+      "properties": {
+        "nip": { "type": "string", "description": "Employee ID number" },
+        "nama": { "type": "string", "description": "Full name" },
+        "jabatan": { "type": "string", "enum": ["Kamad", "Wakamad", "Guru", "Guru Wali Kelas"], "description": "Position" },
+        "kelas": { "type": "string", "description": "Class they are a wali of (if any)" },
+        "user": { "type": "string", "description": "Username for login" },
+        "pass": { "type": "string", "description": "Password for login" },
+        "role": { "type": "string", "enum": ["Guru", "Admin"] }
+      },
+      "required": ["nip", "nama", "user", "pass", "role", "jabatan"]
+    },
+    "TeachingSchedule": {
+      "title": "TeachingSchedule",
+      "description": "Teaching target per class per teacher",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nip": { "type": "string" },
+        "namaGuru": { "type": "string" },
+        "kelas": { "type": "string" },
+        "targetPertemuan": { "type": "number", "description": "Target meetings per month" }
+      },
+      "required": ["nip", "kelas", "targetPertemuan"]
+    },
+    "Classroom": {
+      "title": "Classroom",
+      "description": "Room or group of students",
+      "type": "object",
+      "properties": {
+        "nama": { "type": "string", "description": "Class name (e.g., VII-A)" },
+        "wali": { "type": "string", "description": "Wali kelas name" },
+        "jumlah": { "type": "number", "description": "Student capacity" }
+      },
+      "required": ["nama"]
+    },
+    "Attendance": {
+      "title": "Attendance",
+      "description": "Student attendance record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nisn": { "type": "string" },
+        "nama": { "type": "string" },
+        "kelas": { "type": "string" },
+        "tanggal": { "type": "string", "format": "date" },
+        "jam": { "type": "string" },
+        "status": { "type": "string", "enum": ["Hadir", "Sakit", "Izin", "Alfa"] },
+        "terlambat": { "type": "number" },
+        "keterangan": { "type": "string" }
+      },
+      "required": ["nisn", "tanggal", "status"]
+    },
+    "TeacherAttendance": {
+      "title": "TeacherAttendance",
+      "description": "Teacher attendance record for teaching",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nip": { "type": "string" },
+        "nama": { "type": "string" },
+        "kelas": { "type": "string", "description": "Class being taught" },
+        "tanggal": { "type": "string", "format": "date" },
+        "jam": { "type": "string" }
+      },
+      "required": ["nip", "tanggal", "kelas"]
+    },
+    "Setting": {
+      "title": "Setting",
+      "description": "Daily school hours settings",
+      "type": "object",
+      "properties": {
+        "hari": { "type": "string", "enum": ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"] },
+        "masuk": { "type": "string" },
+        "pulang": { "type": "string" }
+      },
+      "required": ["hari"]
+    },
+    "Holiday": {
+      "title": "Holiday",
+      "description": "School holidays",
+      "type": "object",
+      "properties": {
+        "tanggal": { "type": "string", "format": "date" },
+        "keterangan": { "type": "string" }
+      },
+      "required": ["tanggal"]
+    },
+    "AppConfig": {
+      "title": "AppConfig",
+      "description": "Global application configuration",
+      "type": "object",
+      "properties": {
+        "logoUrl": { "type": "string", "description": "URL for the application logo" },
+        "schoolName": { "type": "string", "description": "Name of the school" },
+        "cardTemplateUrl": { "type": "string", "description": "URL for the student ID card template image" }
+      }
+    }
+  },
+  "firestore": {
+    "students": {
+      "schema": "Student",
+      "description": "Collection of students"
+    },
+    "teachers": {
+      "schema": "Teacher",
+      "description": "Collection of teachers and admins"
+    },
+    "classrooms": {
+      "schema": "Classroom",
+      "description": "Collection of classrooms"
+    },
+    "attendance": {
+      "schema": "Attendance",
+      "description": "Collection of student attendance logs"
+    },
+    "teacherAttendance": {
+      "schema": "TeacherAttendance",
+      "description": "Collection of teacher teaching logs"
+    },
+    "settings": {
+      "schema": "Setting",
+      "description": "Daily hours configuration"
+    },
+    "appConfig": {
+      "schema": "AppConfig",
+      "description": "General application configuration"
+    },
+    "roster": {
+      "schema": "object",
+      "description": "Collection for AI roster data (requirements, config, result)"
+    },
+    "teachingSchedules": {
+      "schema": "TeachingSchedule",
+      "description": "Target hours for teachers"
+    },
+    "holidays": {
+      "schema": "Holiday",
+      "description": "Annual holidays"
+    }
+  }
+}

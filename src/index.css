@@ -1,0 +1,19 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;900&display=swap');
+@import "tailwindcss";
+
+* {
+  box-sizing: border-box;
+}
+
+#reader video {
+  object-fit: cover !important;
+  border-radius: 1rem;
+}
+
+#reader {
+  border: none !important;
+}
+
+.markdown-body {
+  font-family: inherit;
+}

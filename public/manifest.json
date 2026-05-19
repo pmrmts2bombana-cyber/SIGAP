@@ -1,0 +1,27 @@
+{
+  "name": "SIGAP MTsN 2 Bombana",
+  "short_name": "SIGAP",
+  "description": "Sistem Informasi dan Absensi Pelajar Madrasah MTsN 2 Bombana",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#166534",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
