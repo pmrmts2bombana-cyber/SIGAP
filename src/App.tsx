@@ -135,6 +135,10 @@ export default function App() {
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [appConfig, setAppConfig] = useState<AppConfig>({});
 
+  const [searchTermGuru, setSearchTermGuru] = useState('');
+  const [searchTermSiswa, setSearchTermSiswa] = useState('');
+  const [searchTermKelas, setSearchTermKelas] = useState('');
+  const [searchTermJadwal, setSearchTermJadwal] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [session, setSession] = useState<UserSession | null>(null);
   const [studentProfileClassFilter, setStudentProfileClassFilter] = useState('');
@@ -252,30 +256,30 @@ export default function App() {
     const unsubStudents = onSnapshot(collection(db, 'students'), (snap) => {
       const data = snap.docs.map(d => ({ nisn: d.id, ...d.data() } as Student));
       setStudents(data.sort((a, b) => a.nama.localeCompare(b.nama)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'students'));
 
     const unsubTeachers = onSnapshot(collection(db, 'teachers'), (snap) => {
       const data = snap.docs.map(d => ({ nip: d.id, ...d.data() } as Teacher));
       setTeachers(data.sort((a, b) => a.nama.localeCompare(b.nama)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'teachers'));
 
     const unsubClassrooms = onSnapshot(collection(db, 'classrooms'), (snap) => {
       const data = snap.docs.map(d => d.data() as Classroom);
       setClassrooms(data.sort((a, b) => a.nama.localeCompare(b.nama)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'classrooms'));
 
     const unsubSettings = onSnapshot(collection(db, 'settings'), (snap) => {
       setSettings(snap.docs.map(d => d.data() as DaySetting));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'settings'));
 
     const unsubHolidays = onSnapshot(collection(db, 'holidays'), (snap) => {
       const data = snap.docs.map(d => d.data() as Holiday);
       setHolidays(data.sort((a, b) => b.tanggal.localeCompare(a.tanggal)));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'holidays'));
 
     const unsubSchedules = onSnapshot(collection(db, 'teachingSchedules'), (snap) => {
       setTeachingSchedules(snap.docs.map(d => d.data() as TeachingSchedule));
-    });
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'teachingSchedules'));
 
     return () => {
       unsubAttendance();
@@ -1049,6 +1053,10 @@ export default function App() {
   const triggerSuccess = (title: string, message: string) => {
     setShowSuccessToast({ title, message });
     setShowCelebration(true);
+    setSearchTermGuru('');
+    setSearchTermSiswa('');
+    setSearchTermKelas('');
+    setSearchTermJadwal('');
     setPagination({ guru: 0, siswa: 0, kelas: 0, jadwal: 0, absensiSiswa: 0, absensiGuru: 0, rekapMapel: 0 });
     setTimeout(() => {
       setShowSuccessToast(null);
@@ -1433,8 +1441,34 @@ export default function App() {
   const toggleLoader = (val: boolean) => setLoading(val);
   const triggerCurrentPanelRefresh = async () => {
     setRefreshing(true);
-    // Data is synced in real-time via onSnapshot
-    setTimeout(() => setRefreshing(false), 500);
+    // Reset all filters and pagination to ensure user sees latest data
+    setSearchTermGuru('');
+    setSearchTermSiswa('');
+    setSearchTermKelas('');
+    setSearchTermJadwal('');
+    setFilterClassAbsensi('');
+    setFilterNamaAbsensi('');
+    setFilterAdminSiswaClass('');
+    setStudentProfileClassFilter('');
+    
+    // Reset pagination
+    setPagination({ 
+      guru: 0, 
+      siswa: 0, 
+      kelas: 0, 
+      jadwal: 0, 
+      absensiSiswa: 0, 
+      absensiGuru: 0, 
+      rekapMapel: 0 
+    });
+
+    // Real-time data is synced via onSnapshot, but we can simulate a fresh state
+    setLoading(true);
+    setTimeout(() => {
+      setRefreshing(false);
+      setLoading(false);
+      triggerSuccess("DISEMBUR", "Sinkronisasi data terbaru berhasil dilakukan.");
+    }, 1000);
   };
 
   const handleLogin = async () => {
@@ -1724,6 +1758,7 @@ export default function App() {
         { id: 'absensi-guru', label: 'Absensi Guru', icon: User },
         { id: 'rekap', label: 'Laporan Rekap', icon: FileBarChart },
         { id: 'rekap-mapel', label: 'Rekap Mapel', icon: ClipboardList },
+        { id: 'analisis', label: 'Analisis Kehadiran', icon: BarChart3 },
         { id: 'pengaturan', label: 'Pengaturan', icon: Settings }
       ];
     } else if (session?.role === 'Guru') {
@@ -2569,6 +2604,49 @@ export default function App() {
     }
   }, [currentSiswaData]);
 
+  // Filtered lists for panels
+  const filteredGuru = useMemo(() => {
+    if (!searchTermGuru) return teachers;
+    const s = searchTermGuru.toLowerCase();
+    return teachers.filter(t => t.nama.toLowerCase().includes(s) || t.nip.toLowerCase().includes(s));
+  }, [teachers, searchTermGuru]);
+
+  const filteredSiswa = useMemo(() => {
+    if (!searchTermSiswa) return students;
+    const s = searchTermSiswa.toLowerCase();
+    return students.filter(st => st.nama.toLowerCase().includes(s) || st.nisn.toLowerCase().includes(s) || st.kelas.toLowerCase().includes(s));
+  }, [students, searchTermSiswa]);
+
+  const filteredKelas = useMemo(() => {
+    if (!searchTermKelas) return classrooms;
+    const s = searchTermKelas.toLowerCase();
+    return classrooms.filter(c => c.nama.toLowerCase().includes(s) || c.wali.toLowerCase().includes(s));
+  }, [classrooms, searchTermKelas]);
+
+  const filteredJadwal = useMemo(() => {
+    if (!searchTermJadwal) return teachingSchedules;
+    const s = searchTermJadwal.toLowerCase();
+    return teachingSchedules.filter(ts => ts.namaGuru.toLowerCase().includes(s) || ts.mapel.toLowerCase().includes(s) || ts.kelas.toLowerCase().includes(s));
+  }, [teachingSchedules, searchTermJadwal]);
+
+  const groupedJadwal = useMemo(() => {
+    const groups: any = {};
+    filteredJadwal.forEach(s => {
+      const key = `${s.nip}-${s.mapel || 'N/A'}-${s.kelas}`;
+      if (!groups[key]) {
+        groups[key] = {
+          nip: s.nip,
+          namaGuru: s.namaGuru,
+          mapel: s.mapel,
+          kelas: s.kelas,
+          sessions: []
+        };
+      }
+      groups[key].sessions.push(s);
+    });
+    return Object.values(groups);
+  }, [filteredJadwal]);
+
   const renderSuccessToast = () => (
     <AnimatePresence>
       {showSuccessToast && (
@@ -2999,7 +3077,13 @@ export default function App() {
                 <div className="flex flex-wrap gap-3 items-center">
                   <div className="relative w-64">
                     <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                    <input type="text" placeholder="Cari Siswa..." className="w-full bg-white border border-gray-100 rounded-xl py-2 pl-10 pr-4 text-sm focus:ring-2 focus:ring-green-500" />
+                    <input 
+                      type="text" 
+                      placeholder="Cari Siswa..." 
+                      value={searchTermSiswa}
+                      onChange={e => { setSearchTermSiswa(e.target.value); setPagination({...pagination, siswa: 0}); }}
+                      className="w-full bg-white border border-gray-100 rounded-xl py-2 pl-10 pr-4 text-sm focus:ring-2 focus:ring-green-500" 
+                    />
                   </div>
                   <select 
                     value={filterAdminSiswaClass} 
@@ -3055,7 +3139,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-50">
-                      {students.filter(s => filterAdminSiswaClass ? s.kelas === filterAdminSiswaClass : true).slice(pagination.siswa, pagination.siswa + pageSize).map((s, i) => (
+                      {filteredSiswa.filter(s => filterAdminSiswaClass ? s.kelas === filterAdminSiswaClass : true).slice(pagination.siswa, pagination.siswa + pageSize).map((s, i) => (
                         <tr key={i} className="hover:bg-gray-50 transition-colors group">
                           <td className="px-6 py-4 text-center font-bold text-gray-400 text-xs">{pagination.siswa + i + 1}</td>
                           <td className="px-6 py-4">
@@ -3088,12 +3172,12 @@ export default function App() {
                 </table>
               </div>
             </div>
-              {students.length > pageSize && (
-                <div className="mt-4 flex justify-end items-center gap-4 bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                  {filteredSiswa.length > pageSize && (
+                <div className="mt-4 flex justify-end items-center gap-4 bg-white p-4 rounded-2xl border border-gray-100 shadow-sm text-zinc-900">
                   <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Halaman {Math.floor(pagination.siswa / pageSize) + 1}</span>
                   <div className="flex gap-2">
                     <button disabled={pagination.siswa === 0} onClick={() => setPagination({...pagination, siswa: pagination.siswa - pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronLeft size={16} /></button>
-                    <button disabled={pagination.siswa + pageSize >= students.length} onClick={() => setPagination({...pagination, siswa: pagination.siswa + pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronRight size={16} /></button>
+                    <button disabled={pagination.siswa + pageSize >= filteredSiswa.length} onClick={() => setPagination({...pagination, siswa: pagination.siswa + pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronRight size={16} /></button>
                   </div>
                 </div>
               )}
@@ -3252,10 +3336,18 @@ export default function App() {
 
           {activePanel === 'jadwal-mengajar' && (
             <motion.div key="jadwal-mengajar" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-              <div className="mb-4 flex flex-wrap gap-3 justify-between items-center">
-                <div className="flex flex-col">
-                   <h2 className="text-sm font-black text-zinc-900 uppercase tracking-widest">Manajemen Jam Mengajar Guru</h2>
-                   <p className="text-[10px] font-bold text-gray-400">Target otomatis terisi berdasarkan hari mengajar di bulan berjalan</p>
+              <div className="mb-4 flex flex-wrap gap-3 justify-between items-center text-zinc-900">
+                <div className="flex flex-wrap gap-3 items-center">
+                  <div className="relative w-64">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input 
+                      type="text" 
+                      placeholder="Cari Jadwal..." 
+                      value={searchTermJadwal}
+                      onChange={e => { setSearchTermJadwal(e.target.value); setPagination({...pagination, jadwal: 0}); }}
+                      className="w-full bg-white border border-gray-100 rounded-xl py-2 pl-10 pr-4 text-sm focus:ring-2 focus:ring-green-500" 
+                    />
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <select 
@@ -3292,24 +3384,7 @@ export default function App() {
                       const year = now.getFullYear();
                       const month = now.getMonth();
                       
-                      const groups: any = {};
-                      teachingSchedules.forEach(s => {
-                        const key = `${s.nip}-${s.mapel || 'N/A'}-${s.kelas}`;
-                        if (!groups[key]) {
-                          groups[key] = {
-                            nip: s.nip,
-                            namaGuru: s.namaGuru,
-                            mapel: s.mapel,
-                            kelas: s.kelas,
-                            sessions: []
-                          };
-                        }
-                        groups[key].sessions.push(s);
-                      });
-                      
-                      const groupedArr = Object.values(groups);
-                      
-                      return groupedArr.slice(pagination.jadwal, pagination.jadwal + pageSize).map((g: any, i) => {
+                      return groupedJadwal.slice(pagination.jadwal, pagination.jadwal + pageSize).map((g: any, i) => {
                         const totalTarget = g.sessions.reduce((sum: number, s: any) => {
                           const occ = countDaysInMonth(year, month, s.hari, holidays);
                           return sum + (occ * (Number(s.targetPertemuan) || 0));
@@ -3370,12 +3445,12 @@ export default function App() {
                 </table>
               </div>
             </div>
-              {teachingSchedules.length > pageSize && (
-                <div className="mt-4 flex justify-end items-center gap-4 bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                  {groupedJadwal.length > pageSize && (
+                <div className="mt-4 flex justify-end items-center gap-4 bg-white p-4 rounded-2xl border border-gray-100 shadow-sm text-zinc-900">
                   <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Halaman {Math.floor(pagination.jadwal / pageSize) + 1}</span>
                   <div className="flex gap-2">
                     <button disabled={pagination.jadwal === 0} onClick={() => setPagination({...pagination, jadwal: pagination.jadwal - pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronLeft size={16} /></button>
-                    <button disabled={pagination.jadwal + pageSize >= teachingSchedules.length} onClick={() => setPagination({...pagination, jadwal: pagination.jadwal + pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronRight size={16} /></button>
+                    <button disabled={pagination.jadwal + pageSize >= groupedJadwal.length} onClick={() => setPagination({...pagination, jadwal: pagination.jadwal + pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronRight size={16} /></button>
                   </div>
                 </div>
               )}
@@ -3387,7 +3462,13 @@ export default function App() {
                <div className="mb-4 flex flex-wrap gap-3 justify-between items-center text-zinc-900">
                 <div className="relative w-72">
                   <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input type="text" placeholder="Cari Guru..." className="w-full bg-white border border-gray-100 rounded-xl py-2 pl-10 pr-4 text-sm focus:ring-2 focus:ring-green-500" />
+                  <input 
+                    type="text" 
+                    placeholder="Cari Guru..." 
+                    value={searchTermGuru}
+                    onChange={e => { setSearchTermGuru(e.target.value); setPagination({...pagination, guru: 0}); }}
+                    className="w-full bg-white border border-gray-100 rounded-xl py-2 pl-10 pr-4 text-sm focus:ring-2 focus:ring-green-500" 
+                  />
                 </div>
                 <div className="flex gap-2 text-zinc-900">
                   <select 
@@ -3433,7 +3514,7 @@ export default function App() {
                       </tr>
                     </thead>
                       <tbody className="divide-y divide-gray-50">
-                        {teachers.slice(pagination.guru, pagination.guru + pageSize).map((g, i) => (
+                        {filteredGuru.slice(pagination.guru, pagination.guru + pageSize).map((g, i) => (
                           <tr key={i} className="hover:bg-gray-50 transition-colors">
                             <td className="px-6 py-4 text-center font-bold text-gray-400 text-xs">{pagination.guru + i + 1}</td>
                             <td className="px-6 py-4">
@@ -3462,12 +3543,12 @@ export default function App() {
                   </table>
                 </div>
               </div>
-              {teachers.length > pageSize && (
+                    {filteredGuru.length > pageSize && (
                 <div className="mt-4 flex justify-end items-center gap-4 bg-white p-4 rounded-2xl border border-gray-100 shadow-sm text-zinc-900">
                   <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Halaman {Math.floor(pagination.guru / pageSize) + 1}</span>
                   <div className="flex gap-2">
                     <button disabled={pagination.guru === 0} onClick={() => setPagination({...pagination, guru: pagination.guru - pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronLeft size={16} /></button>
-                    <button disabled={pagination.guru + pageSize >= teachers.length} onClick={() => setPagination({...pagination, guru: pagination.guru + pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronRight size={16} /></button>
+                    <button disabled={pagination.guru + pageSize >= filteredGuru.length} onClick={() => setPagination({...pagination, guru: pagination.guru + pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronRight size={16} /></button>
                   </div>
                 </div>
               )}
@@ -3477,13 +3558,25 @@ export default function App() {
           {activePanel === 'kelas' && (
             <motion.div key="kelas" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                <div className="mb-4 flex flex-wrap gap-3 justify-between items-center text-zinc-900">
-                <select 
-                  value={pageSize} 
-                  onChange={e => setPageSize(parseInt(e.target.value))}
-                  className="bg-zinc-100 text-zinc-600 px-3 py-2 rounded-xl text-[10px] font-black uppercase border-0 focus:ring-0"
-                >
-                  {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
-                </select>
+                <div className="flex flex-wrap gap-3 items-center">
+                  <div className="relative w-64">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input 
+                      type="text" 
+                      placeholder="Cari Kelas..." 
+                      value={searchTermKelas}
+                      onChange={e => { setSearchTermKelas(e.target.value); setPagination({...pagination, kelas: 0}); }}
+                      className="w-full bg-white border border-gray-100 rounded-xl py-2 pl-10 pr-4 text-sm focus:ring-2 focus:ring-green-500" 
+                    />
+                  </div>
+                  <select 
+                    value={pageSize} 
+                    onChange={e => setPageSize(parseInt(e.target.value))}
+                    className="bg-zinc-100 text-zinc-600 px-3 py-2 rounded-xl text-[10px] font-black uppercase border-0 focus:ring-0"
+                  >
+                    {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
+                  </select>
+                </div>
                 <button 
                   onClick={() => { setEditingKelas({ nama: '', wali: '', jumlah: 0 }); setShowKelasModal(true); }}
                   className="bg-green-800 text-white px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2"
@@ -3492,7 +3585,7 @@ export default function App() {
                 </button>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-zinc-900">
-                {classrooms.slice(pagination.kelas, pagination.kelas + pageSize).map((k, i) => (
+                {filteredKelas.slice(pagination.kelas, pagination.kelas + pageSize).map((k, i) => (
                   <div key={i} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-col justify-between">
                     <div>
                       <div className="flex justify-between items-start mb-4">
@@ -3566,12 +3659,12 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              {classrooms.length > pageSize && (
+              {filteredKelas.length > pageSize && (
                 <div className="mt-4 flex justify-end items-center gap-4 bg-white p-4 rounded-2xl border border-gray-100 shadow-sm text-zinc-900">
                   <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Halaman {Math.floor(pagination.kelas / pageSize) + 1}</span>
                   <div className="flex gap-2">
                     <button disabled={pagination.kelas === 0} onClick={() => setPagination({...pagination, kelas: pagination.kelas - pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronLeft size={16} /></button>
-                    <button disabled={pagination.kelas + pageSize >= classrooms.length} onClick={() => setPagination({...pagination, kelas: pagination.kelas + pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronRight size={16} /></button>
+                    <button disabled={pagination.kelas + pageSize >= filteredKelas.length} onClick={() => setPagination({...pagination, kelas: pagination.kelas + pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronRight size={16} /></button>
                   </div>
                 </div>
               )}
