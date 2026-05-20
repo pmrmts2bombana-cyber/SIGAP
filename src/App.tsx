@@ -2420,7 +2420,14 @@ export default function App() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
                   <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">NISN</label>
-                  <input type="text" required value={editingSiswa?.nisn || ''} onChange={e => setEditingSiswa({...(editingSiswa as Student), nisn: e.target.value})} className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-3 font-bold" />
+                  <input 
+                    type="text" 
+                    required 
+                    disabled={!!(editingSiswa && students.some(s => s.nisn === editingSiswa.nisn && s.nisn !== ''))}
+                    value={editingSiswa?.nisn || ''} 
+                    onChange={e => setEditingSiswa({...(editingSiswa as Student), nisn: e.target.value})} 
+                    className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-3 font-bold disabled:opacity-50 disabled:cursor-not-allowed" 
+                  />
                 </div>
                 <div>
                   <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Nama Lengkap</label>
@@ -2501,7 +2508,14 @@ export default function App() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
                   <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">NIP</label>
-                  <input type="text" required value={editingGuru?.nip || ''} onChange={e => setEditingGuru({...editingGuru, nip: e.target.value})} className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-3 font-bold" />
+                  <input 
+                    type="text" 
+                    required 
+                    disabled={!!(editingGuru && teachers.some(t => t.nip === editingGuru.nip && t.nip !== ''))}
+                    value={editingGuru?.nip || ''} 
+                    onChange={e => setEditingGuru({...editingGuru, nip: e.target.value})} 
+                    className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-3 font-bold disabled:opacity-50 disabled:cursor-not-allowed" 
+                  />
                 </div>
                 <div className="col-span-2">
                   <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Nama Guru</label>
@@ -2575,7 +2589,15 @@ export default function App() {
             <form onSubmit={handleSaveKelas} className="p-8 space-y-4">
               <div>
                 <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Nama Kelas</label>
-                <input type="text" required value={editingKelas?.nama || ''} onChange={e => setEditingKelas({...editingKelas, nama: e.target.value})} className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-3 font-bold" placeholder="Contoh: VII-A" />
+                <input 
+                  type="text" 
+                  required 
+                  disabled={!!(editingKelas && classrooms.some(c => c.nama === (editingKelas.oldNama || editingKelas.nama) && c.nama !== ''))}
+                  value={editingKelas?.nama || ''} 
+                  onChange={e => setEditingKelas({...editingKelas, nama: e.target.value})} 
+                  className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-3 font-bold disabled:opacity-50 disabled:cursor-not-allowed" 
+                  placeholder="Contoh: VII-A" 
+                />
               </div>
               <div>
                 <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">Wali Kelas</label>
