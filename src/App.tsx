@@ -199,6 +199,7 @@ export default function App() {
   const [dismissQuotaNotice, setDismissQuotaNotice] = useState(false);
 
   const [filterClassAbsensi, setFilterClassAbsensi] = useState('');
+  const [filterGuruAbsensiClass, setFilterGuruAbsensiClass] = useState('');
   const [filterNamaAbsensi, setFilterNamaAbsensi] = useState('');
   const [filterAdminSiswaClass, setFilterAdminSiswaClass] = useState('');
   const [siswaDashboardDate, setSiswaDashboardDate] = useState(new Date().toISOString().split('T')[0]);
@@ -210,7 +211,9 @@ export default function App() {
     jadwal: 0,
     absensiSiswa: 0,
     absensiGuru: 0,
-    rekapMapel: 0
+    rekapMapel: 0,
+    rekapSiswa: 0,
+    rekapGuru: 0
   });
   const [pageSize, setPageSize] = useState(10);
   const getLocalISO = () => {
@@ -663,6 +666,10 @@ export default function App() {
       setFilterClassAbsensi(session.kelas);
     }
   }, [session]);
+
+  useEffect(() => {
+    setPagination(prev => ({ ...prev, rekapSiswa: 0, rekapGuru: 0 }));
+  }, [rekapFilter.bulan, rekapFilter.kelas, rekapFilter.type]);
 
   const [editingProfileData, setEditingProfileData] = useState<any>(null);
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
@@ -1791,7 +1798,7 @@ export default function App() {
     const data = isSiswa 
       ? students
         .filter(s => (rekapFilter.kelas ? s.kelas === rekapFilter.kelas : true))
-        .map(s => {
+        .map((s, idx) => {
           const monthAttendance = attendance.filter(a => a.nisn === s.nisn && a.tanggal.startsWith(rekapFilter.bulan));
           const hadir = monthAttendance.filter(a => a.status === 'Hadir').length;
           const izin = monthAttendance.filter(a => a.status === 'Izin').length;
@@ -1804,6 +1811,7 @@ export default function App() {
           const effCount = getEffectiveDays(y, m - 1, holidays, settings, limit).length;
           const perc = effCount > 0 ? Math.round(((hadir + izin + sakit) / effCount) * 100) : 0;
           return {
+            "No.": idx + 1,
             "Nama Siswa": s.nama,
             "Kelas": s.kelas,
             "Hadir": hadir,
@@ -1821,7 +1829,7 @@ export default function App() {
            const scheds = teachingSchedules.filter(ts => ts.nip === t.nip);
            return scheds.some(sc => sc.kelas === rekapFilter.kelas);
         })
-        .map(t => {
+        .map((t, idx) => {
           const schedules = teachingSchedules.filter(ts => ts.nip === t.nip && (rekapFilter.kelas ? ts.kelas === rekapFilter.kelas : true));
           const [y, m] = rekapFilter.bulan.split('-').map(Number);
           const totalTarget = schedules.reduce((sum, sch) => {
@@ -1832,9 +1840,11 @@ export default function App() {
           const actual = monthAtts.length;
           const totalLambat = monthAtts.reduce((sum, a) => sum + (a.terlambat || 0), 0);
           const perc = totalTarget > 0 ? Math.round((actual / totalTarget) * 100) : 0;
+          const mapelTaught = Array.from(new Set(schedules.map(sc => sc.mapel).filter(Boolean))).join(', ') || '-';
           return {
+            "No.": idx + 1,
             "Nama Guru": t.nama,
-            "Jabatan": t.jabatan || 'Guru',
+            "Mapel": mapelTaught,
             "Kelas": rekapFilter.kelas || schedules.map(s => s.kelas).join(', ') || '-',
             "Target Sesi": totalTarget,
             "Aktual Sesi": actual,
@@ -1856,7 +1866,7 @@ export default function App() {
     const data = isSiswa 
       ? students
         .filter(s => (rekapFilter.kelas ? s.kelas === rekapFilter.kelas : true))
-        .map(s => {
+        .map((s, idx) => {
           const m = attendance.filter(a => a.nisn === s.nisn && a.tanggal.startsWith(rekapFilter.bulan));
           const h = m.filter(a => a.status === 'Hadir').length;
           const i = m.filter(a => a.status === 'Izin').length;
@@ -1868,7 +1878,7 @@ export default function App() {
           const limit = (now.getFullYear() === y && (now.getMonth() + 1) === mm) ? now.getDate() : undefined;
           const effCount = getEffectiveDays(y, mm - 1, holidays, settings, limit).length;
           const p = effCount > 0 ? Math.round(((h + i + sk) / effCount) * 100) : 0;
-          return [s.nama, s.kelas, h, i, sk, f, lbt, `${p}%`];
+          return [idx + 1, s.nama, s.kelas, h, i, sk, f, lbt, `${p}%`];
         })
       : teachers
         .filter(t => {
@@ -1876,7 +1886,7 @@ export default function App() {
           const scheds = teachingSchedules.filter(ts => ts.nip === t.nip);
           return scheds.some(sc => sc.kelas === rekapFilter.kelas);
         })
-        .map(t => {
+        .map((t, idx) => {
           const schs = teachingSchedules.filter(ts => ts.nip === t.nip && (rekapFilter.kelas ? ts.kelas === rekapFilter.kelas : true));
           const [y, m] = rekapFilter.bulan.split('-').map(Number);
           const tgt = schs.reduce((sum, sch) => {
@@ -1887,15 +1897,16 @@ export default function App() {
           const act = atts.length;
           const lbt = atts.reduce((sum, a) => sum + (a.terlambat || 0), 0);
           const p = tgt > 0 ? Math.round((act / tgt) * 100) : 0;
-          return [t.nama, t.jabatan || 'Guru', rekapFilter.kelas || schs.map(s => s.kelas).join(', ') || '-', tgt, act, lbt, `${p}%`];
+          const mapelTaught = Array.from(new Set(schs.map(sc => sc.mapel).filter(Boolean))).join(', ') || '-';
+          return [idx + 1, t.nama, mapelTaught, rekapFilter.kelas || schs.map(s => s.kelas).join(', ') || '-', tgt, act, lbt, `${p}%`];
         });
     
     doc.text(`Laporan Rekap Kehadiran ${rekapFilter.type}`, 14, 15);
     doc.text(`Bulan: ${rekapFilter.bulan}`, 14, 25);
     
     const columns = isSiswa 
-      ? ["Nama", "Kelas", "H", "I", "S", "A", "Lbt(m)", "%"]
-      : ["Nama Guru", "Jabatan", "Kelas", "Target", "Aktual", "Lbt(m)", "%"];
+      ? ["No.", "Nama", "Kelas", "H", "I", "S", "A", "Lbt(m)", "%"]
+      : ["No.", "Nama Guru", "Mapel", "Kelas", "Target", "Aktual", "Lbt(m)", "%"];
       
     autoTable(doc, {
       startY: 30,
@@ -3379,6 +3390,11 @@ export default function App() {
     const s = searchTermJadwal.toLowerCase();
     return teachingSchedules.filter(ts => ts.namaGuru.toLowerCase().includes(s) || ts.mapel.toLowerCase().includes(s) || ts.kelas.toLowerCase().includes(s));
   }, [teachingSchedules, searchTermJadwal]);
+
+  const filteredTeacherAttendance = useMemo(() => {
+    if (!filterGuruAbsensiClass) return teacherAttendance;
+    return teacherAttendance.filter(ta => ta.kelas === filterGuruAbsensiClass);
+  }, [teacherAttendance, filterGuruAbsensiClass]);
 
   const groupedJadwal = useMemo(() => {
     const groups: any = {};
@@ -4874,6 +4890,21 @@ export default function App() {
                     >
                       {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
                     </select>
+                    <select 
+                      value={filterGuruAbsensiClass} 
+                      onChange={e => {
+                        setFilterGuruAbsensiClass(e.target.value);
+                        setPagination(prev => ({ ...prev, absensiGuru: 0 }));
+                      }}
+                      className="bg-zinc-100 text-zinc-600 px-4 py-2.5 rounded-xl text-xs font-semibold border-0 focus:ring-0 cursor-pointer animate-fade-in"
+                    >
+                      <option value="">Semua Kelas</option>
+                      {classrooms.map(c => <option key={c.nama} value={c.nama}>{c.nama}</option>)}
+                    </select>
+                    <select style={{ display: 'none' }}
+                    >
+                      {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
+                    </select>
                  </div>
                </div>
                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
@@ -4892,7 +4923,7 @@ export default function App() {
                     </tr>
                   </thead>
                     <tbody className="divide-y divide-gray-50">
-                    {teacherAttendance.slice(pagination.absensiGuru, pagination.absensiGuru + pageSize).map((a, i) => (
+                    {filteredTeacherAttendance.slice(pagination.absensiGuru, pagination.absensiGuru + pageSize).map((a, i) => (
                       <tr key={a.id} className="hover:bg-gray-50 transition-colors">
                         <td className="px-6 py-4 text-center font-bold text-gray-400 text-xs">{pagination.absensiGuru + i + 1}</td>
                         <td className="px-6 py-4 text-gray-400 font-mono font-bold">{a.nip}</td>
@@ -4931,19 +4962,19 @@ export default function App() {
                         )}
                       </tr>
                     ))}
-                    {teacherAttendance.length === 0 && (
+                    {filteredTeacherAttendance.length === 0 && (
                       <tr><td colSpan={session?.role === 'Admin' ? 8 : 7} className="text-center py-8 text-gray-400 font-medium italic">Belum ada data mengajar hari ini.</td></tr>
                     )}
                   </tbody>
                 </table>
               </div>
             </div>
-              {teacherAttendance.length > pageSize && (
+              {filteredTeacherAttendance.length > pageSize && (
                 <div className="mt-4 flex justify-end items-center gap-4 bg-white p-4 rounded-2xl border border-gray-100 shadow-sm text-zinc-900">
                   <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Halaman {Math.floor(pagination.absensiGuru / pageSize) + 1}</span>
                   <div className="flex gap-2">
-                    <button disabled={pagination.absensiGuru === 0} onClick={() => setPagination({...pagination, absensiGuru: pagination.absensiGuru - pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronLeft size={16} /></button>
-                    <button disabled={pagination.absensiGuru + pageSize >= teacherAttendance.length} onClick={() => setPagination({...pagination, absensiGuru: pagination.absensiGuru + pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"><ChevronRight size={16} /></button>
+                    <button disabled={pagination.absensiGuru === 0} onClick={() => setPagination({...pagination, absensiGuru: pagination.absensiGuru - pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all cursor-pointer"><ChevronLeft size={16} /></button>
+                    <button disabled={pagination.absensiGuru + pageSize >= filteredTeacherAttendance.length} onClick={() => setPagination({...pagination, absensiGuru: pagination.absensiGuru + pageSize})} className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all cursor-pointer"><ChevronRight size={16} /></button>
                   </div>
                 </div>
               )}
@@ -5331,19 +5362,34 @@ export default function App() {
           {activePanel === 'rekap' && (
             <motion.div key="rekap" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
               <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-6">
-                <div className="flex gap-2 p-1 bg-gray-100 rounded-xl mb-6 w-fit">
-                   <button 
-                     onClick={() => setRekapFilter({...rekapFilter, type: 'Siswa'})}
-                     className={`px-6 py-2 text-xs font-black rounded-lg transition-all ${rekapFilter.type === 'Siswa' ? 'bg-green-800 text-white shadow' : 'text-gray-400 uppercase tracking-widest'}`}
-                   >
-                     REKAP SISWA
-                   </button>
-                   <button 
-                     onClick={() => setRekapFilter({...rekapFilter, type: 'Guru'})}
-                     className={`px-6 py-2 text-xs font-black rounded-lg transition-all ${rekapFilter.type === 'Guru' ? 'bg-green-800 text-white shadow' : 'text-gray-400 uppercase tracking-widest'}`}
-                   >
-                     REKAP GURU
-                   </button>
+                <div className="flex flex-wrap justify-between items-center gap-4 mb-6">
+                  <div className="flex gap-2 p-1 bg-gray-100 rounded-xl w-fit">
+                     <button 
+                       onClick={() => setRekapFilter({...rekapFilter, type: 'Siswa'})}
+                       className={`px-6 py-2 text-xs font-black rounded-lg transition-all ${rekapFilter.type === 'Siswa' ? 'bg-green-800 text-white shadow' : 'text-gray-400 uppercase tracking-widest'}`}
+                     >
+                       REKAP SISWA
+                     </button>
+                     <button 
+                       onClick={() => setRekapFilter({...rekapFilter, type: 'Guru'})}
+                       className={`px-6 py-2 text-xs font-black rounded-lg transition-all ${rekapFilter.type === 'Guru' ? 'bg-green-800 text-white shadow' : 'text-gray-400 uppercase tracking-widest'}`}
+                     >
+                       REKAP GURU
+                     </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Tampil:</span>
+                    <select 
+                      value={pageSize} 
+                      onChange={e => {
+                        setPageSize(parseInt(e.target.value));
+                        setPagination(prev => ({ ...prev, rekapSiswa: 0, rekapGuru: 0 }));
+                      }}
+                      className="bg-zinc-100 text-zinc-600 px-3 py-2 rounded-xl text-[10px] font-black uppercase border-0 focus:ring-0 cursor-pointer"
+                    >
+                      {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
+                    </select>
+                  </div>
                 </div>
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
                     <div>
@@ -5394,6 +5440,7 @@ export default function App() {
                     <thead className="bg-gray-50 text-gray-400 uppercase text-[10px] font-black tracking-widest border-b border-gray-100">
                       {rekapFilter.type === 'Siswa' ? (
                         <tr>
+                          <th className="px-6 py-4 text-center w-12">No.</th>
                           <th className="px-6 py-4">Nama Siswa</th>
                           <th className="px-6 py-4 text-center">Kelas</th>
                           <th className="px-6 py-4 text-center">Hadir</th>
@@ -5404,8 +5451,9 @@ export default function App() {
                         </tr>
                       ) : (
                         <tr>
+                          <th className="px-6 py-4 text-center w-12">No.</th>
                           <th className="px-6 py-4">Nama Guru</th>
-                          <th className="px-6 py-4 text-center">Jabatan</th>
+                          <th className="px-6 py-4 text-center">Mapel</th>
                           <th className="px-6 py-4 text-center">Kelas Mengajar</th>
                           <th className="px-6 py-4 text-center">Target Sesi</th>
                           <th className="px-6 py-4 text-center">Aktual</th>
@@ -5417,7 +5465,9 @@ export default function App() {
                       {rekapFilter.type === 'Siswa' ? (
                         students
                           .filter(s => (rekapFilter.kelas ? s.kelas === rekapFilter.kelas : true))
+                          .slice(pagination.rekapSiswa || 0, (pagination.rekapSiswa || 0) + pageSize)
                           .map((s, i) => {
+                            const indexOffset = pagination.rekapSiswa || 0;
                             const monthAttendance = monthAttendanceMap[s.nisn] || [];
                             const hadir = monthAttendance.filter(a => a.status === 'Hadir').length;
                             const izin = monthAttendance.filter(a => a.status === 'Izin').length;
@@ -5431,6 +5481,7 @@ export default function App() {
                             
                             return (
                               <tr key={i} className="hover:bg-gray-50 transition-colors">
+                                <td className="px-6 py-4 text-center font-bold text-gray-500 text-xs">{indexOffset + i + 1}</td>
                                 <td className="px-6 py-4 font-bold">{s.nama}</td>
                                 <td className="px-6 py-4 text-center font-medium">{s.kelas}</td>
                                 <td className="px-6 py-4 text-center">{hadir}</td>
@@ -5453,7 +5504,9 @@ export default function App() {
                             }
                             return true;
                           })
+                          .slice(pagination.rekapGuru || 0, (pagination.rekapGuru || 0) + pageSize)
                           .map((t, i) => {
+                            const indexOffset = pagination.rekapGuru || 0;
                             const schedules = teachingSchedules.filter(ts => ts.nip === t.nip && (rekapFilter.kelas ? ts.kelas === rekapFilter.kelas : true));
                             const [y, m] = rekapFilter.bulan.split('-').map(Number);
                             const totalTarget = schedules.reduce((sum, sch) => {
@@ -5464,11 +5517,13 @@ export default function App() {
                               .filter(ta => rekapFilter.kelas ? ta.kelas === rekapFilter.kelas : true)
                               .length;
                             const perc = totalTarget > 0 ? Math.round((actual / totalTarget) * 100) : 0;
+                            const mapelTaught = Array.from(new Set(schedules.map(sc => sc.mapel).filter(Boolean))).join(', ') || '-';
                             
                             return (
                               <tr key={i} className="hover:bg-gray-50 transition-colors">
+                                <td className="px-6 py-4 text-center font-bold text-gray-500 text-xs">{indexOffset + i + 1}</td>
                                 <td className="px-6 py-4 font-bold">{t.nama}</td>
-                                <td className="px-6 py-4 text-center text-[10px] font-black uppercase text-gray-400">{t.jabatan || 'Guru'}</td>
+                                <td className="px-6 py-4 text-center font-semibold text-gray-700 text-xs">{mapelTaught}</td>
                                 <td className="px-6 py-4 text-center text-[10px] font-black uppercase text-gray-400">
                                   {rekapFilter.kelas ? rekapFilter.kelas : (schedules.map(s => s.kelas).join(', ') || '-')}
                                 </td>
@@ -5486,6 +5541,69 @@ export default function App() {
                     </tbody>
                   </table>
                 </div>
+                {/* Pagination Controls */}
+                {rekapFilter.type === 'Siswa' ? (
+                  (() => {
+                    const totalItems = students.filter(s => (rekapFilter.kelas ? s.kelas === rekapFilter.kelas : true)).length;
+                    if (totalItems > pageSize) {
+                      return (
+                        <div className="bg-gray-50 px-6 py-4 border-t border-gray-100 flex items-center justify-between">
+                          <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Halaman {Math.floor((pagination.rekapSiswa || 0) / pageSize) + 1}</span>
+                          <div className="flex gap-2">
+                            <button 
+                              disabled={(pagination.rekapSiswa || 0) === 0} 
+                              onClick={() => setPagination({ ...pagination, rekapSiswa: (pagination.rekapSiswa || 0) - pageSize })} 
+                              className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all cursor-pointer"
+                            >
+                              <ChevronLeft size={16} />
+                            </button>
+                            <button 
+                              disabled={(pagination.rekapSiswa || 0) + pageSize >= totalItems} 
+                              onClick={() => setPagination({ ...pagination, rekapSiswa: (pagination.rekapSiswa || 0) + pageSize })} 
+                              className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all cursor-pointer"
+                            >
+                              <ChevronRight size={16} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()
+                ) : (
+                  (() => {
+                    const totalItems = teachers.filter(t => {
+                      if (rekapFilter.kelas) {
+                        return teachingSchedules.some(ts => ts.nip === t.nip && ts.kelas === rekapFilter.kelas);
+                      }
+                      return true;
+                    }).length;
+                    if (totalItems > pageSize) {
+                      return (
+                        <div className="bg-gray-50 px-6 py-4 border-t border-gray-100 flex items-center justify-between">
+                          <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Halaman {Math.floor((pagination.rekapGuru || 0) / pageSize) + 1}</span>
+                          <div className="flex gap-2">
+                            <button 
+                              disabled={(pagination.rekapGuru || 0) === 0} 
+                              onClick={() => setPagination({ ...pagination, rekapGuru: (pagination.rekapGuru || 0) - pageSize })} 
+                              className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all cursor-pointer"
+                            >
+                              <ChevronLeft size={16} />
+                            </button>
+                            <button 
+                              disabled={(pagination.rekapGuru || 0) + pageSize >= totalItems} 
+                              onClick={() => setPagination({ ...pagination, rekapGuru: (pagination.rekapGuru || 0) + pageSize })} 
+                              className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all cursor-pointer"
+                            >
+                              <ChevronRight size={16} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()
+                )}
               </div>
             </motion.div>
           )}
