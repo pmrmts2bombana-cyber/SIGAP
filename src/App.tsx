@@ -14,7 +14,7 @@ import {
   ChevronRight, ChevronLeft, ClipboardList, FileBarChart, Table as TableIcon, Search, Plus, 
   RefreshCcw, Printer, Download, Eye, EyeOff, Calendar, Clock, Trash2, Edit, Save,
   ArrowLeft, Upload, FileSpreadsheet, BarChart3, Info, CheckCircle2, XCircle, AlertTriangle, AlertCircle,
-  Maximize2, CreditCard, Award, ExternalLink, ShieldCheck, Sparkles, Heart
+  Maximize2, CreditCard, Award, ExternalLink, ShieldCheck, Sparkles, Heart, ArrowUpCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { firestoreService } from './services/firestoreService';
@@ -302,6 +302,7 @@ export default function App() {
     // Deterministic state check for school leadership
     const isLeadership = role === 'Guru' && (jabatan === 'Kamad' || jabatan === 'Wakamad');
 
+    let unsubOwnProfile = () => {};
     let unsubAttendance = () => {};
     let unsubTeacherAttendance = () => {};
     let unsubStudents = () => {};
@@ -320,6 +321,36 @@ export default function App() {
       const data = snap.docs.map(d => d.data() as Holiday);
       setHolidays(data.sort((a, b) => b.tanggal.localeCompare(a.tanggal)));
     }, (error) => handleFirestoreError(error, OperationType.GET, 'holidays'));
+
+    // Real-time synchronization of teacher profile to react instantly to admin role/position/jabatan changes
+    if (role === 'Guru') {
+      unsubOwnProfile = onSnapshot(doc(db, 'teachers', uid), (snap) => {
+        if (snap.exists()) {
+          const tData = snap.data() as Teacher;
+          setSession(prev => {
+            if (!prev) return prev;
+            const updatedIsWali = !!tData.kelas;
+            const hasDiff = 
+              prev.name !== tData.nama ||
+              prev.kelas !== tData.kelas ||
+              prev.isWali !== updatedIsWali ||
+              prev.jabatan !== tData.jabatan;
+
+            if (hasDiff) {
+              console.log("[SIGAP] Real-time session update detected:", tData);
+              return {
+                ...prev,
+                name: tData.nama,
+                kelas: tData.kelas,
+                isWali: updatedIsWali,
+                jabatan: tData.jabatan
+              };
+            }
+            return prev;
+          });
+        }
+      }, (error) => console.error("Error syncing own profile", error));
+    }
 
     // 2. Performance & Quota Optimization dynamically applied
     if (role === 'Siswa') {
@@ -541,6 +572,7 @@ export default function App() {
     }
 
     return () => {
+      unsubOwnProfile();
       unsubAttendance();
       unsubTeacherAttendance();
       unsubStudents();
@@ -550,7 +582,7 @@ export default function App() {
       unsubHolidays();
       unsubSchedules();
     };
-  }, [firebaseConnected, session]);
+  }, [firebaseConnected, session?.uid, session?.role, session?.kelas, session?.isWali, session?.jabatan]);
 
   const [selectedTeacherNipForCapaian, setSelectedTeacherNipForCapaian] = useState<string | null>(null);
 
@@ -1354,6 +1386,116 @@ export default function App() {
 
   const [showSiswaModal, setShowSiswaModal] = useState(false);
   const [editingSiswa, setEditingSiswa] = useState<Student | null>(null);
+
+  // States for Naik Kelas (Promotion) feature
+  const [showNaikKelasModal, setShowNaikKelasModal] = useState(false);
+  const [naikKelasOrigin, setNaikKelasOrigin] = useState('');
+  const [naikKelasTarget, setNaikKelasTarget] = useState('');
+  const [naikKelasSelectedStudents, setNaikKelasSelectedStudents] = useState<string[]>([]);
+  const [naikKelasSearchKeyword, setNaikKelasSearchKeyword] = useState('');
+
+  // Merge database classrooms with specified items to cover all eventualities gracefully
+  const naikKelasOriginOptions = useMemo(() => {
+    const specified = ['VII A', 'VII B', 'VII C', 'VII D', 'VII E', 'VII F', 'VIII A', 'VIII B', 'VIII C', 'VIII D', 'VIII E', 'VIII F'];
+    // Filter database classrooms that are not already in specified
+    const dbOthers = (classrooms || [])
+      .map(c => c.nama)
+      .filter(name => !specified.includes(name) && (name.startsWith('VII') || name.startsWith('7') || name.startsWith('VIII') || name.startsWith('8')));
+    return [...specified, ...dbOthers];
+  }, [classrooms]);
+
+  const naikKelasTargetOptions = useMemo(() => {
+    const specified = ['VIII A', 'VIII B', 'VIII C', 'VIII D', 'VIII E', 'VIII F', 'IX A', 'IX B', 'IX C', 'IX D', 'IX E', 'IX F'];
+    const dbOthers = (classrooms || [])
+      .map(c => c.nama)
+      .filter(name => !specified.includes(name) && (name.startsWith('VIII') || name.startsWith('8') || name.startsWith('IX') || name.startsWith('9')));
+    return [...specified, ...dbOthers];
+  }, [classrooms]);
+
+  const naikKelasFilteredStudents = useMemo(() => {
+    if (!naikKelasOrigin) return [];
+    return students.filter(s => {
+      const matchClass = s.kelas === naikKelasOrigin;
+      if (!matchClass) return false;
+      if (!naikKelasSearchKeyword) return true;
+      const sLower = naikKelasSearchKeyword.toLowerCase();
+      return s.nama.toLowerCase().includes(sLower) || s.nisn.includes(sLower);
+    });
+  }, [students, naikKelasOrigin, naikKelasSearchKeyword]);
+
+  // Handle select/unselect all shown
+  const handleToggleSelectAllNaikKelas = () => {
+    const allFilteredNisns = naikKelasFilteredStudents.map(s => s.nisn);
+    const areAllSelected = allFilteredNisns.every(nisn => naikKelasSelectedStudents.includes(nisn));
+    if (areAllSelected) {
+      // Unselect everyone currently filtered
+      setNaikKelasSelectedStudents(prev => prev.filter(nisn => !allFilteredNisns.includes(nisn)));
+    } else {
+      // Select everyone currently filtered
+      setNaikKelasSelectedStudents(prev => {
+        const union = new Set([...prev, ...allFilteredNisns]);
+        return Array.from(union);
+      });
+    }
+  };
+
+  const handleToggleSelectStudentNaikKelas = (nisn: string) => {
+    setNaikKelasSelectedStudents(prev => 
+      prev.includes(nisn) ? prev.filter(n => n !== nisn) : [...prev, nisn]
+    );
+  };
+
+  // Pre-select all students of the chosen class by default
+  useEffect(() => {
+    if (showNaikKelasModal && naikKelasOrigin) {
+      const allNisns = students.filter(s => s.kelas === naikKelasOrigin).map(s => s.nisn);
+      setNaikKelasSelectedStudents(allNisns);
+    } else {
+      setNaikKelasSelectedStudents([]);
+    }
+  }, [naikKelasOrigin, showNaikKelasModal, students]);
+
+  const handleProsesNaikKelas = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!naikKelasOrigin || !naikKelasTarget) {
+      alert("Harap pilih kelas asal dan kelas tujuan.");
+      return;
+    }
+    if (naikKelasSelectedStudents.length === 0) {
+      alert("Harap pilih setidaknya satu siswa untuk dinaikkan kelas.");
+      return;
+    }
+
+    setConfirmModal({
+      show: true,
+      title: 'Konfirmasi Naik Kelas?',
+      message: `Sebanyak ${naikKelasSelectedStudents.length} siswa akan diubah kelasnya dari ${naikKelasOrigin} menjadi ${naikKelasTarget}. Aksi ini akan langsung disinkronkan ke Firestore.`,
+      entityName: `${naikKelasSelectedStudents.length} Siswa`,
+      onConfirm: async () => {
+        toggleLoader(true);
+        try {
+          // Filter students who are selected
+          const studentsToUpdate = students.filter(s => naikKelasSelectedStudents.includes(s.nisn));
+          for (const s of studentsToUpdate) {
+            await firestoreService.saveSiswa({
+              ...s,
+              kelas: naikKelasTarget
+            });
+          }
+          setShowNaikKelasModal(false);
+          setNaikKelasOrigin('');
+          setNaikKelasTarget('');
+          setNaikKelasSelectedStudents([]);
+          setNaikKelasSearchKeyword('');
+          triggerSuccess("BERHASIL", `Hore! Sebanyak ${studentsToUpdate.length} siswa berhasil dinaikkan kelas ke ${naikKelasTarget}.`);
+        } catch (e) {
+          alert("Gagal melakukan proses naik kelas.");
+        } finally {
+          toggleLoader(false);
+        }
+      }
+    });
+  };
   const [showGuruModal, setShowGuruModal] = useState(false);
   const [editingGuru, setEditingGuru] = useState<any | null>(null);
   const [showKelasModal, setShowKelasModal] = useState(false);
@@ -2257,7 +2399,7 @@ export default function App() {
         </div>
         <h2 className="font-black text-xs text-center text-white uppercase tracking-widest">SIGAP MTsN 2</h2>
         <span className="bg-white/10 text-white text-[9px] px-2 py-0.5 rounded-full font-bold mt-2 uppercase border border-white/10">
-          {session?.role} {session?.isWali && `(Wali ${session.kelas})`}
+          {session?.jabatan || session?.role} {session?.isWali && `(Wali ${session.kelas})`}
         </span>
       </div>
 
@@ -2332,11 +2474,13 @@ export default function App() {
     e.preventDefault();
     if (!editingGuru) return;
     toggleLoader(true);
-    // Ensure kelas is only for Wali Kelas
+    // Ensure kelas is only for Wali Kelas, and handle empty user/pass
     const cleanedGuru = {
       ...editingGuru,
       jabatan: editingGuru.jabatan || 'Guru',
       role: editingGuru.role || 'Guru',
+      user: editingGuru.user?.trim() || `guru${editingGuru.nip}`.toLowerCase(),
+      pass: editingGuru.pass?.trim() || '123456',
       kelas: editingGuru.jabatan === 'Guru Wali Kelas' ? editingGuru.kelas : ''
     };
     try {
@@ -2406,6 +2550,161 @@ export default function App() {
       }
     });
   };
+
+  const renderNaikKelasModal = () => (
+    <AnimatePresence>
+      {showNaikKelasModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowNaikKelasModal(false)} />
+          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="bg-gradient-to-r from-orange-600 to-orange-500 p-6 text-white text-center flex flex-col items-center">
+              <ArrowUpCircle size={36} className="mb-2 animate-bounce" />
+              <h2 className="text-xl font-bold uppercase tracking-wide">Kenaikan Kelas Massal</h2>
+              <p className="text-orange-100 text-xs mt-1">Ubah kelas para siswa sekaligus dengan cepat</p>
+            </div>
+            
+            <form onSubmit={handleProsesNaikKelas} className="p-6 overflow-y-auto space-y-6 custom-scrollbar flex-grow">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">1. Pilih Kelas Asal</label>
+                  <select 
+                    required 
+                    value={naikKelasOrigin} 
+                    onChange={e => {
+                      setNaikKelasOrigin(e.target.value);
+                      setNaikKelasSearchKeyword('');
+                    }} 
+                    className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-3 font-bold text-sm mt-1 focus:ring-2 focus:ring-orange-500"
+                  >
+                    <option value="">-- Pilih Kelas Asal --</option>
+                    {naikKelasOriginOptions.map(clsName => (
+                      <option key={clsName} value={clsName}>{clsName}</option>
+                    ))}
+                  </select>
+                </div>
+                
+                <div>
+                  <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">2. Cari / Filter Nama Siswa</label>
+                  <div className="relative mt-1">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input 
+                      type="text" 
+                      placeholder="Cari nama atau NISN..." 
+                      disabled={!naikKelasOrigin}
+                      value={naikKelasSearchKeyword}
+                      onChange={e => setNaikKelasSearchKeyword(e.target.value)}
+                      className="w-full bg-zinc-50 border-0 rounded-xl py-3 pl-10 pr-4 text-sm font-bold focus:ring-2 focus:ring-orange-500 disabled:opacity-50" 
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {naikKelasOrigin && (
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center bg-orange-50 px-4 py-3 rounded-xl border border-orange-100">
+                    <p className="text-xs font-bold text-orange-950 uppercase tracking-wider">
+                      Daftar Siswa ({naikKelasFilteredStudents.length} Terdeteksi)
+                    </p>
+                    {naikKelasFilteredStudents.length > 0 && (
+                      <button 
+                        type="button" 
+                        onClick={handleToggleSelectAllNaikKelas}
+                        className="text-[10px] font-black uppercase text-orange-700 bg-white hover:bg-orange-100 border border-orange-200 px-3 py-1.5 rounded-lg transition-all"
+                      >
+                        {naikKelasFilteredStudents.every(s => naikKelasSelectedStudents.includes(s.nisn)) ? 'Batal Pilih Semua' : 'Pilih Semua'}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="max-h-60 overflow-y-auto border border-gray-100 rounded-2xl divide-y divide-gray-50 bg-white custom-scrollbar w-full">
+                    {naikKelasFilteredStudents.length > 0 ? (
+                      naikKelasFilteredStudents.map(s => {
+                        const isSelected = naikKelasSelectedStudents.includes(s.nisn);
+                        return (
+                          <div 
+                            key={s.nisn} 
+                            onClick={() => handleToggleSelectStudentNaikKelas(s.nisn)}
+                            className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-orange-50/50 transition-colors ${isSelected ? 'bg-orange-50/20' : ''}`}
+                          >
+                            <input 
+                              type="checkbox" 
+                              checked={isSelected}
+                              onChange={() => {}} // Handled by parent click
+                              className="rounded text-orange-600 focus:ring-orange-500 w-4 h-4"
+                            />
+                            {s.foto ? (
+                              <img src={s.foto} className="w-8 h-8 rounded-lg object-cover" alt="" />
+                            ) : (
+                              <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center text-gray-400">
+                                <User size={14} />
+                              </div>
+                            )}
+                            <div className="flex-grow">
+                              <p className="text-xs font-extrabold text-zinc-900">{s.nama}</p>
+                              <p className="text-[10px] font-bold text-gray-400 font-mono">NISN: {s.nisn}</p>
+                            </div>
+                            <span className="text-[10px] bg-zinc-100 text-zinc-600 font-bold px-2 py-0.5 rounded-full">{s.kelas}</span>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="p-8 text-center text-gray-400 text-xs italic">
+                        {naikKelasSearchKeyword ? 'Tidak ada siswa yang cocok dengan pencarian.' : 'Tidak ada siswa yang terdaftar di kelas ini.'}
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div className="text-right">
+                    <span className="text-[10px] bg-orange-100 text-orange-850 font-black px-3 py-1.5 rounded-full uppercase tracking-wider">
+                      {naikKelasSelectedStudents.length} Siswa Terpilih
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-zinc-50 p-4 rounded-2xl space-y-3">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex items-center gap-2 text-zinc-700">
+                    <ArrowUpCircle size={20} className="text-orange-600" />
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-orange-950">3. Tentukan Kelas Tujuan</h4>
+                      <p className="text-[10px] text-zinc-400">Siswa terpilih akan otomatis dipindahkan ke kelas ini</p>
+                    </div>
+                  </div>
+                  
+                  <div className="w-full md:w-64">
+                    <select 
+                      required 
+                      disabled={!naikKelasOrigin || naikKelasSelectedStudents.length === 0}
+                      value={naikKelasTarget} 
+                      onChange={e => setNaikKelasTarget(e.target.value)}
+                      className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 font-bold text-sm focus:ring-2 focus:ring-orange-500 disabled:opacity-50"
+                    >
+                      <option value="">-- Pilih Kelas Tujuan --</option>
+                      {naikKelasTargetOptions.map(clsName => (
+                        <option key={clsName} disabled={clsName === naikKelasOrigin} value={clsName}>{clsName}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 flex gap-3">
+                <button type="button" onClick={() => setShowNaikKelasModal(false)} className="flex-1 py-4 font-bold text-zinc-400">Batal</button>
+                <button 
+                  type="submit" 
+                  disabled={!naikKelasOrigin || !naikKelasTarget || naikKelasSelectedStudents.length === 0}
+                  className="flex-1 bg-gradient-to-r from-orange-600 to-orange-500 text-white rounded-2xl py-4 font-bold hover:from-orange-500 hover:to-orange-400 shadow-xl disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Proses Naik Kelas
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
 
   const renderSiswaModal = () => (
     <AnimatePresence>
@@ -3192,7 +3491,7 @@ export default function App() {
                 </div>
                 <h2 className="font-black text-lg text-white">SIGAP MTsN 2</h2>
                 <span className="bg-orange-500 text-black text-[10px] px-3 py-1 rounded-full font-black mt-2 uppercase tracking-widest">
-                  {session?.role}
+                  {session?.jabatan || session?.role}
                 </span>
               </div>
 
@@ -3292,6 +3591,7 @@ export default function App() {
         )}
       </div>
 
+      {renderNaikKelasModal()}
       {renderSiswaModal()}
       {renderGuruModal()}
       {renderKelasModal()}
@@ -3395,7 +3695,7 @@ export default function App() {
                  <div className="bg-green-950 p-8 rounded-[2rem] text-white flex flex-col justify-between overflow-hidden relative group">
                     <div className="relative z-10">
                        <h3 className="text-lg font-black leading-tight mb-2">Selamat Datang,<br/>{session?.name}!</h3>
-                       <p className="text-green-300 text-[10px] font-bold uppercase tracking-widest">Akses Panel {session?.role}</p>
+                       <p className="text-green-300 text-[10px] font-bold uppercase tracking-widest">Akses Panel {session?.jabatan || session?.role}</p>
                     </div>
                     
                     <div className="mt-8 space-y-4 relative z-10">
@@ -3566,6 +3866,12 @@ export default function App() {
                     className="bg-blue-100 text-blue-600 px-4 py-2 rounded-xl text-[10px] font-black tracking-widest uppercase flex items-center gap-2 hover:bg-blue-200 transition-all"
                   >
                     <Upload size={14} /> Import
+                  </button>
+                  <button 
+                    onClick={() => setShowNaikKelasModal(true)}
+                    className="bg-orange-600 text-white px-4 py-2 rounded-xl text-[10px] font-black tracking-widest uppercase flex items-center gap-2 hover:bg-orange-500 transition-all shadow-sm"
+                  >
+                    <ArrowUpCircle size={14} /> Naik Kelas
                   </button>
                   <button 
                     onClick={() => { setEditingSiswa({ nisn: '', nama: '', jenisKelamin: 'L', tempat: '', tgl: '', kelas: '', ayah: '', ibu: '', hp: '' }); setShowSiswaModal(true); }} 
@@ -4022,7 +4328,19 @@ export default function App() {
                           <td className="px-6 py-4 text-gray-600 font-medium">{g.user}</td>
                           <td className="px-6 py-4">
                             <div className="flex gap-2">
-                               <button onClick={() => { setEditingGuru({ nip: g.nip, nama: g.nama, jabatan: g.jabatan, kelas: g.kelas, user: g.user, pass: g.pass, role: g.role, foto: g.foto }); setShowGuruModal(true); }} className="text-blue-500 hover:text-blue-800"><Edit size={16} /></button>
+                               <button onClick={() => { 
+                                 setEditingGuru({ 
+                                   nip: g.nip, 
+                                   nama: g.nama, 
+                                   jabatan: g.jabatan || 'Guru', 
+                                   kelas: g.kelas || '', 
+                                   user: g.user || g.nip || '', 
+                                   pass: g.pass || '123456', 
+                                   role: g.role || 'Guru', 
+                                   foto: g.foto || '' 
+                                 }); 
+                                 setShowGuruModal(true); 
+                               }} className="text-blue-500 hover:text-blue-800"><Edit size={16} /></button>
                                <button onClick={() => handleDeleteGuru(g.nip, g.nama)} className="text-red-500 hover:text-red-800"><Trash2 size={16} /></button>
                             </div>
                           </td>
@@ -4323,6 +4641,41 @@ export default function App() {
 
           {activePanel === 'absensi-umum' && (
             <motion.div key="absensi-umum" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+               <div className="mb-4 flex flex-wrap gap-3 justify-between items-center">
+                 <div>
+                   <h2 className="text-xl font-bold flex items-center gap-2 text-zinc-900">
+                     <ClipboardList className="text-green-700" /> Log Presensi Siswa
+                   </h2>
+                   <p className="text-xs text-zinc-400 font-medium">Manajemen riwayat dan data presensi harian siswa</p>
+                 </div>
+                 {session?.role === 'Admin' && (
+                   <button
+                     onClick={() => {
+                       setConfirmModal({
+                         show: true,
+                         title: 'Reset Seluruh Absensi Siswa?',
+                         entityName: 'SELURUH DATA ABSENSI SISWA',
+                         message: 'Aksi ini akan menghapus permanen seluruh data riwayat presensi siswa di database Firestore. Aksi ini tidak dapat dibatalkan.',
+                         onConfirm: async () => {
+                           toggleLoader(true);
+                           try {
+                             await firestoreService.resetAbsensiSiswa();
+                             triggerSuccess("BERHASIL RESET", "Seluruh data absensi siswa telah berhasil dihapus secara permanen.");
+                           } catch (err) {
+                             alert("Gagal melakukan reset data.");
+                           } finally {
+                             toggleLoader(false);
+                           }
+                         }
+                       });
+                     }}
+                     className="bg-red-600 hover:bg-red-700 text-white px-4 py-2.5 rounded-xl text-[10px] font-black tracking-widest uppercase flex items-center gap-2 transition-all shadow-sm"
+                   >
+                     <Trash2 size={14} /> Reset Seluruh Absensi Siswa
+                   </button>
+                 )}
+               </div>
+
                <div className="mb-6 flex flex-col md:flex-row gap-4 bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
                   <div className="flex-1">
                     <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Filter Kelas</label>
@@ -4435,15 +4788,22 @@ export default function App() {
                         </td>
                         <td className="px-6 py-4 text-center">
                            {session?.role === 'Admin' && (
-                             <button onClick={async () => { 
+                             <button onClick={() => { 
                              setConfirmModal({
                                show: true,
                                title: 'Hapus Log Absensi?',
+                               entityName: `Absensi Siswa: ${a.nama} kelas ${a.kelas} pada tanggal ${a.tanggal}`,
                                message: 'Rekaman presensi siswa ini akan dihapus dari riwayat hari ini.',
                                onConfirm: async () => {
                                  toggleLoader(true); 
-                                 await firestoreService.hapusAbsensi(a.id); 
-                                 toggleLoader(false);
+                                 try {
+                                   await firestoreService.hapusAbsensi(a.id); 
+                                   triggerSuccess("BERHASIL", `Log absensi ${a.nama} berhasil dihapus.`);
+                                 } catch (err) {
+                                   alert("Gagal menghapus data.");
+                                 } finally {
+                                   toggleLoader(false);
+                                 }
                                }
                              });
                            }} className="text-red-300 hover:text-red-600">
@@ -4473,17 +4833,48 @@ export default function App() {
 
           {activePanel === 'absensi-guru' && (
             <motion.div key="absensi-guru" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-               <div className="flex flex-wrap gap-4 justify-between items-center mb-4">
-                 <h2 className="text-sm font-black text-green-900 uppercase tracking-widest flex items-center gap-2">
-                   <Clock size={16} /> Data Mengajar Guru - {formatIndoDate(new Date().toISOString().split('T')[0])}
-                 </h2>
-                 <select 
-                    value={pageSize} 
-                    onChange={e => setPageSize(parseInt(e.target.value))}
-                    className="bg-zinc-100 text-zinc-600 px-3 py-2 rounded-xl text-[10px] font-black uppercase border-0 focus:ring-0"
-                  >
-                    {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
-                  </select>
+               <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
+                 <div className="flex flex-col">
+                   <h2 className="text-xl font-bold flex items-center gap-2 text-zinc-900">
+                     <Clock size={20} className="text-green-700" /> Log Presensi Mengajar Guru
+                   </h2>
+                   <p className="text-xs text-zinc-400 font-medium font-semibold">Hari Ini: {formatIndoDate(new Date().toISOString().split('T')[0])}</p>
+                 </div>
+                 <div className="flex items-center gap-2">
+                   {session?.role === 'Admin' && (
+                     <button
+                       onClick={() => {
+                         setConfirmModal({
+                           show: true,
+                           title: 'Reset Seluruh Absensi Guru?',
+                           entityName: 'SELURUH DATA ABSENSI GURU',
+                           message: 'Aksi ini akan menghapus semua riwayat presensi mengajar guru dari database secara permanen. Aksi ini tidak dapat dibatalkan.',
+                           onConfirm: async () => {
+                             toggleLoader(true);
+                             try {
+                               await firestoreService.resetAbsensiGuru();
+                               triggerSuccess("BERHASIL RESET", "Seluruh data absensi guru telah berhasil dihapus secara permanen.");
+                             } catch (err) {
+                               alert("Gagal melakukan reset data.");
+                             } finally {
+                               toggleLoader(false);
+                             }
+                           }
+                         });
+                       }}
+                       className="bg-red-600 hover:bg-red-700 text-white px-4 py-2.5 rounded-xl text-[10px] font-black tracking-widest uppercase flex items-center gap-2 transition-all shadow-sm"
+                     >
+                       <Trash2 size={14} /> Reset Absensi Guru
+                     </button>
+                   )}
+                   <select 
+                      value={pageSize} 
+                      onChange={e => setPageSize(parseInt(e.target.value))}
+                      className="bg-zinc-100 text-zinc-600 px-3 py-2.5 rounded-xl text-[10px] font-black uppercase border-0 focus:ring-0"
+                    >
+                      {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
+                    </select>
+                 </div>
                </div>
                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                 <div className="overflow-x-auto">
@@ -4513,17 +4904,24 @@ export default function App() {
                         {session?.role === 'Admin' && (
                           <td className="px-6 py-4 text-center">
                             <button 
-                              onClick={async () => {
-                                if (window.confirm(`Hapus data absensi guru ${a.nama}?`)) {
-                                  toggleLoader(true);
-                                  try {
-                                    await firestoreService.hapusAbsensiGuru(a.id);
-                                  } catch (err) {
-                                    alert("Gagal menghapus data.");
-                                  } finally {
-                                    toggleLoader(false);
+                              onClick={() => {
+                                setConfirmModal({
+                                  show: true,
+                                  title: 'Hapus Absensi Guru?',
+                                  entityName: `Absensi Guru: ${a.nama} kelas ${a.kelas} pada tanggal ${a.tanggal}`,
+                                  message: 'Rekaman presensi guru ini akan dihapus dari riwayat.',
+                                  onConfirm: async () => {
+                                    toggleLoader(true);
+                                    try {
+                                      await firestoreService.hapusAbsensiGuru(a.id);
+                                      triggerSuccess("BERHASIL", `Presensi guru ${a.nama} berhasil dihapus.`);
+                                    } catch (err) {
+                                      alert("Gagal menghapus data.");
+                                    } finally {
+                                      toggleLoader(false);
+                                    }
                                   }
-                                }
+                                });
                               }}
                               className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition-all"
                             >

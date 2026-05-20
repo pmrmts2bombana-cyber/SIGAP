@@ -178,6 +178,30 @@ export const firestoreService = {
     }
   },
 
+  resetAbsensiSiswa: async () => {
+    try {
+      const q = query(collection(db, 'attendance'));
+      const snapshot = await getDocs(q);
+      const promises = snapshot.docs.map(d => deleteDoc(doc(db, 'attendance', d.id)));
+      await Promise.all(promises);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, 'attendance-all');
+      throw e;
+    }
+  },
+
+  resetAbsensiGuru: async () => {
+    try {
+      const q = query(collection(db, 'teacherAttendance'));
+      const snapshot = await getDocs(q);
+      const promises = snapshot.docs.map(d => deleteDoc(doc(db, 'teacherAttendance', d.id)));
+      await Promise.all(promises);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, 'teacherAttendance-all');
+      throw e;
+    }
+  },
+
   // Scan Logic
   processScan: async (nisn: string) => {
     try {
