@@ -14,7 +14,8 @@ import {
   ChevronRight, ChevronLeft, ClipboardList, FileBarChart, Table as TableIcon, Search, Plus, 
   RefreshCcw, Printer, Download, Eye, EyeOff, Calendar, Clock, Trash2, Edit, Save,
   ArrowLeft, Upload, FileSpreadsheet, BarChart3, Info, CheckCircle2, XCircle, AlertTriangle, AlertCircle,
-  Maximize2, CreditCard, Award, ExternalLink, ShieldCheck, Sparkles, Heart, ArrowUpCircle
+  Maximize2, CreditCard, Award, ExternalLink, ShieldCheck, Sparkles, Heart, ArrowUpCircle,
+  BookOpen, X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { firestoreService } from './services/firestoreService';
@@ -59,6 +60,28 @@ const formatIndoDate = (dateStr: string) => {
       }).format(d);
   } catch (e) {
     return dateStr;
+  }
+};
+
+const getIndonesianDay = (dateStr: string) => {
+  if (!dateStr) return '-';
+  try {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    const dayNames = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+    return dayNames[date.getDay()] || "-";
+  } catch (e) {
+    return '-';
+  }
+};
+
+const getMonthYearText = (monthStr: string) => {
+  if (!monthStr) return '-';
+  try {
+    const [y, m] = monthStr.split('-').map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+  } catch (e) {
+    return monthStr;
   }
 };
 
@@ -115,7 +138,7 @@ const getEffectiveDays = (year: number, month: number, holidays: Holiday[], sett
 
 const AttendanceChart = ({ data }: { data: any[] }) => (
   <div className="h-64 w-full">
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer width="100%" height="100%" minWidth={0}>
       <AreaChart data={data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="colorHadir" x1="0" y1="0" x2="0" y2="1">
@@ -151,6 +174,11 @@ const formatMinutes = (minutes: number) => {
   return `${m} menit`;
 };
 
+const getLocalISO = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
 export default function App() {
   const [students, setStudents] = useState<Student[]>([]);
   const [teachers, setTeachers] = useState<any[]>([]);
@@ -173,6 +201,7 @@ export default function App() {
   const [activePanel, setActivePanel] = useState('home');
 
   const [analysisClass, setAnalysisClass] = useState('');
+  const [analysisMonth, setAnalysisMonth] = useState(getLocalISO().slice(0, 7));
   const [appLogoInput, setAppLogoInput] = useState('');
 
   // Force analysisClass for Wali Kelas
@@ -187,11 +216,44 @@ export default function App() {
     return getEffectiveDays(now.getFullYear(), now.getMonth(), holidays, settings, now.getDate());
   }, [holidays, settings]);
 
+  const effectiveDaysForAnalysisMonth = useMemo(() => {
+    if (!analysisMonth) return [];
+    try {
+      const [y, m] = analysisMonth.split('-').map(Number);
+      const now = new Date();
+      const currentMonthPrefix = now.toISOString().slice(0, 7);
+      
+      let limit;
+      if (analysisMonth < currentMonthPrefix) {
+        limit = new Date(y, m, 0).getDate();
+      } else if (analysisMonth === currentMonthPrefix) {
+        limit = now.getDate();
+      } else {
+        limit = 0;
+      }
+      return getEffectiveDays(y, m - 1, holidays, settings, limit);
+    } catch (e) {
+      return [];
+    }
+  }, [analysisMonth, holidays, settings]);
+
   const DEFAULT_SUBJECTS = useMemo(() => [
     'Fiqih', "Alqur'an Hadis", 'Akida Akhlak', 'SKI', 'Bhs. Indonesia', 
     'Bhs. Arab', 'Bhs. Inggris', 'Matematika', 'IPA', 'IPS', 
     'Penjas', 'PPKN', 'Informatika', 'Koding K.A', 'Mulok'
   ], []);
+
+  const [newSubject, setNewSubject] = useState('');
+  const activeSubjects = useMemo(() => {
+    return Array.isArray(appConfig.subjects) ? appConfig.subjects : DEFAULT_SUBJECTS;
+  }, [appConfig.subjects, DEFAULT_SUBJECTS]);
+
+  const [selectedDetailRecap, setSelectedDetailRecap] = useState<{
+    kelas: string;
+    tanggal: string;
+    mapel: string;
+    namaGuru: string;
+  } | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [firebaseConnected, setFirebaseConnected] = useState(false);
@@ -200,6 +262,8 @@ export default function App() {
 
   const [filterClassAbsensi, setFilterClassAbsensi] = useState('');
   const [filterGuruAbsensiClass, setFilterGuruAbsensiClass] = useState('');
+  const [filterTanggalAbsensi, setFilterTanggalAbsensi] = useState('');
+  const [filterTanggalAbsensiGuru, setFilterTanggalAbsensiGuru] = useState('');
   const [filterNamaAbsensi, setFilterNamaAbsensi] = useState('');
   const [filterAdminSiswaClass, setFilterAdminSiswaClass] = useState('');
   const [siswaDashboardDate, setSiswaDashboardDate] = useState(new Date().toISOString().split('T')[0]);
@@ -216,10 +280,6 @@ export default function App() {
     rekapGuru: 0
   });
   const [pageSize, setPageSize] = useState(10);
-  const getLocalISO = () => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  };
 
   const [currentDate, setCurrentDate] = useState(getLocalISO);
 
@@ -234,11 +294,14 @@ export default function App() {
 
   const [rekapMapelFilter, setRekapMapelFilter] = useState({
     nip: '',
-    tanggal: getLocalISO(),
-    mapel: ''
+    bulan: getLocalISO().slice(0, 7),
+    mapel: '',
+    kelas: ''
   });
 
   const [confirmModal, setConfirmModal] = useState<{ show: boolean, title: string, message: string, entityName?: string, onConfirm: () => void } | null>(null);
+  const [resetAbsensiTarget, setResetAbsensiTarget] = useState<'Siswa' | 'Guru' | null>(null);
+  const [resetAbsensiBulan, setResetAbsensiBulan] = useState(getLocalISO().slice(0, 7));
 
   useEffect(() => {
     onQuotaExceeded((isExceeded) => {
@@ -781,6 +844,37 @@ export default function App() {
   };
 
   const renderKBC = () => {
+    const isAuthorized = session?.role === 'Guru' || session?.role === 'Admin';
+
+    if (!isAuthorized) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-[500px] bg-white rounded-[3rem] p-12 shadow-2xl border border-red-50 text-center relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-red-400 via-pink-500 to-rose-600"></div>
+          <div className="absolute -top-24 -right-24 w-64 h-64 bg-red-50 rounded-full blur-3xl opacity-50"></div>
+          <div className="absolute -bottom-24 -left-24 w-64 h-64 bg-rose-50 rounded-full blur-3xl opacity-50"></div>
+
+          <div className="relative z-10 max-w-lg mx-auto">
+            <motion.div 
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="w-24 h-24 bg-gradient-to-br from-red-500 to-rose-600 rounded-[2.5rem] flex items-center justify-center mb-8 mx-auto shadow-lg shadow-red-200"
+            >
+              <AlertCircle className="text-white" size={44} />
+            </motion.div>
+
+            <h3 className="text-3xl font-black text-gray-900 uppercase tracking-tighter mb-4">
+              Akses <span className="text-red-600">Ditolak</span>
+            </h3>
+            
+            <p className="text-sm font-bold text-gray-500 mb-10 leading-relaxed">
+              Anda tidak memiliki izin/hak akses untuk membuka halaman SIGAP KBC. 
+              Sebutkan akun guru atau admin aktif yang sah untuk melanjutkan.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-col items-center justify-center min-h-[500px] bg-white rounded-[3rem] p-12 shadow-2xl border border-rose-50 text-center relative overflow-hidden">
         {/* Background Decorative Elements */}
@@ -810,7 +904,7 @@ export default function App() {
             <motion.a 
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              href="https://kbc-ecru.vercel.app/"
+              href="https://kbc-mtsn2bombana.vercel.app/"
               target="_blank"
               rel="noopener noreferrer"
               className="w-full bg-zinc-900 text-white rounded-[2rem] py-6 px-8 font-black uppercase tracking-widest shadow-xl hover:bg-zinc-800 transition-all flex items-center justify-center gap-4 group cursor-pointer no-underline"
@@ -1385,6 +1479,311 @@ export default function App() {
                 Hapus Sekarang
               </button>
             </div>
+          </div>
+        </motion.div>
+      </div>
+    );
+  };
+
+  const ResetAbsensiModal = () => {
+    if (!resetAbsensiTarget) return null;
+    return (
+      <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+        <motion.div 
+          initial={{ scale: 0.9, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          className="bg-white p-8 rounded-[2.5rem] shadow-2xl max-w-md w-full border border-gray-100"
+        >
+          <div className="flex flex-col items-center">
+            <div className="bg-red-50 p-4 rounded-3xl text-red-600 mb-6 scale-110">
+              <Trash2 size={32} />
+            </div>
+            <h3 className="text-xl font-black text-gray-900 mb-2 text-center">
+              Reset Absensi {resetAbsensiTarget}
+            </h3>
+            <p className="text-sm text-gray-500 font-medium mb-6 text-center leading-relaxed">
+              Silakan pilih cakupan penghapusan data absensi <strong>{resetAbsensiTarget === 'Siswa' ? 'Siswa' : 'Guru'}</strong>. Anda dapat memilih bulan & tahun tertentu, atau menghapus seluruhnya.
+            </p>
+
+            <div className="w-full space-y-4 mb-8">
+              <div>
+                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Pilih Bulan & Tahun</label>
+                <input 
+                  type="month"
+                  value={resetAbsensiBulan}
+                  onChange={e => setResetAbsensiBulan(e.target.value)}
+                  className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-3 font-semibold text-sm mt-1 focus:ring-green-600 focus:border-green-600"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 w-full">
+              <button 
+                type="button"
+                disabled={!resetAbsensiBulan}
+                onClick={async () => {
+                  const target = resetAbsensiTarget;
+                  const targetBulan = resetAbsensiBulan;
+                  if (!targetBulan) return;
+                  setResetAbsensiTarget(null);
+                  toggleLoader(true);
+                  try {
+                    if (target === 'Siswa') {
+                      await firestoreService.resetAbsensiSiswa(targetBulan);
+                      triggerSuccess("BERHASIL RESET", `Data absensi siswa pada bulan ${targetBulan} berhasil dihapus.`);
+                    } else {
+                      await firestoreService.resetAbsensiGuru(targetBulan);
+                      triggerSuccess("BERHASIL RESET", `Data absensi guru pada bulan ${targetBulan} berhasil dihapus.`);
+                    }
+                  } catch (err) {
+                    alert("Gagal menghapus data.");
+                  } finally {
+                    toggleLoader(false);
+                  }
+                }}
+                className="w-full bg-red-600 hover:bg-red-700 text-white py-3.5 rounded-2xl font-black text-xs uppercase tracking-widest transition-all disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-red-150"
+              >
+                <Trash2 size={14} /> Hapus Hanya Bulan Terpilih ({resetAbsensiBulan || '-'})
+              </button>
+
+              <button 
+                type="button"
+                onClick={() => {
+                  setConfirmModal({
+                    show: true,
+                    title: `Reset Seluruh Absensi ${resetAbsensiTarget}?`,
+                    entityName: `SELURUH DATA ABSENSI ${resetAbsensiTarget.toUpperCase()}`,
+                    message: `Aksi ini akan menghapus permanen seluruh data riwayat presensi ${resetAbsensiTarget.toLowerCase()} di database Firestore (tanpa filter bulan). Aksi ini tidak dapat dibatalkan.`,
+                    onConfirm: async () => {
+                      const target = resetAbsensiTarget;
+                      setResetAbsensiTarget(null);
+                      toggleLoader(true);
+                      try {
+                        if (target === 'Siswa') {
+                          await firestoreService.resetAbsensiSiswa();
+                          triggerSuccess("BERHASIL RESET", "Seluruh data absensi siswa telah berhasil dihapus secara permanen.");
+                        } else {
+                          await firestoreService.resetAbsensiGuru();
+                          triggerSuccess("BERHASIL RESET", "Seluruh data absensi guru telah berhasil dihapus secara permanen.");
+                        }
+                      } catch (err) {
+                        alert("Gagal melakukan reset data.");
+                      } finally {
+                        toggleLoader(false);
+                      }
+                    }
+                  });
+                  setResetAbsensiTarget(null);
+                }}
+                className="w-full bg-zinc-900 hover:bg-zinc-805 text-white py-3.5 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+              >
+                <AlertCircle size={14} /> Hapus Seluruh Data (Semua Bulan)
+              </button>
+
+              <button 
+                type="button"
+                onClick={() => setResetAbsensiTarget(null)} 
+                className="w-full bg-zinc-100 hover:bg-zinc-200 text-zinc-500 py-3.5 rounded-2xl font-black text-xs uppercase tracking-widest transition-all text-center mt-2"
+              >
+                Batalkan
+              </button>
+            </div>
+          </div>
+        </motion.div>
+      </div>
+    );
+  };
+
+  const StudentAttendanceDetailModal = () => {
+    if (!selectedDetailRecap) return null;
+    
+    const { kelas, tanggal, mapel, namaGuru } = selectedDetailRecap;
+    const classStudents = students.filter(s => s.kelas === kelas);
+    const dayAttendance = attendance.filter(a => a.kelas === kelas && a.tanggal === tanggal);
+    
+    const countStatus = (status: string) => {
+      return dayAttendance.filter(a => a.status === status).length;
+    };
+    
+    const h = countStatus('Hadir');
+    const s = countStatus('Sakit');
+    const i = countStatus('Izin');
+    const al = countStatus('Alfa');
+
+    return (
+      <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
+        <motion.div 
+          initial={{ scale: 0.95, opacity: 0, y: 10 }}
+          animate={{ scale: 1, opacity: 1, y: 0 }}
+          className="bg-white rounded-[2rem] shadow-2xl max-w-2xl w-full border border-gray-100 overflow-hidden flex flex-col my-8"
+        >
+          {/* Header */}
+          <div className="bg-green-800 p-6 text-white flex justify-between items-start">
+            <div className="min-w-0 pr-4">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="bg-white/20 text-white text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full">
+                  Kelas {kelas}
+                </span>
+                <span className="bg-green-700 text-green-100 text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full">
+                  {mapel}
+                </span>
+              </div>
+              <h3 className="text-xl font-bold mt-2 truncate">{formatIndoDate(tanggal)}</h3>
+              <p className="text-green-200 text-xs mt-1 font-medium truncate">
+                Guru Pengajar: <span className="font-extrabold text-white">{namaGuru}</span>
+              </p>
+            </div>
+            <button 
+              onClick={() => setSelectedDetailRecap(null)}
+              className="text-white/80 hover:text-white p-2 hover:bg-white/10 rounded-full transition-all cursor-pointer shrink-0"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* Stats Bar */}
+          <div className="bg-gray-50 border-b border-gray-100 p-4 px-6 grid grid-cols-4 gap-3 text-center">
+            <div className="bg-green-50 border border-green-150 rounded-2xl p-2.5">
+              <p className="text-[10px] font-black text-green-700 uppercase tracking-widest">Hadir</p>
+              <p className="text-lg font-black text-green-950 mt-0.5">{h}</p>
+            </div>
+            <div className="bg-orange-50 border border-orange-150 rounded-2xl p-2.5">
+              <p className="text-[10px] font-black text-orange-700 uppercase tracking-widest">Sakit</p>
+              <p className="text-lg font-black text-orange-950 mt-0.5">{s}</p>
+            </div>
+            <div className="bg-blue-50 border border-blue-150 rounded-2xl p-2.5">
+              <p className="text-[10px] font-black text-blue-700 uppercase tracking-widest">Izin</p>
+              <p className="text-lg font-black text-blue-950 mt-0.5">{i}</p>
+            </div>
+            <div className="bg-red-50 border border-red-150 rounded-2xl p-2.5">
+              <p className="text-[10px] font-black text-red-700 uppercase tracking-widest">Alfa</p>
+              <p className="text-lg font-black text-red-950 mt-0.5">{al}</p>
+            </div>
+          </div>
+
+          {/* Download Buttons Bar */}
+          <div className="bg-white border-b border-gray-100 p-4 px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Unduh Laporan:</span>
+            <div className="flex gap-2 w-full sm:w-auto">
+              <button
+                onClick={() => {
+                  const dataForExcel = classStudents.map((student, idx) => {
+                    const record = dayAttendance.find(at => at.nisn === student.nisn);
+                    return {
+                      "No": idx + 1,
+                      "NISN": student.nisn,
+                      "Nama Siswa": student.nama,
+                      "Kehadiran": record?.status || 'Belum Absen',
+                      "Keterangan": record?.keterangan || '-'
+                    };
+                  });
+                  const ws = XLSX.utils.json_to_sheet(dataForExcel);
+                  const wb = XLSX.utils.book_new();
+                  XLSX.utils.book_append_sheet(wb, ws, "Presensi Siswa");
+                  XLSX.writeFile(wb, `Presensi_Siswa_Kelas_${kelas}_${tanggal}.xlsx`);
+                }}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 bg-green-50 text-green-700 hover:bg-green-100 px-3.5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-green-150 cursor-pointer"
+              >
+                <FileSpreadsheet size={14} /> Excel
+              </button>
+              <button
+                onClick={() => {
+                  const doc = new jsPDF('p', 'mm', 'a4');
+                  doc.setFontSize(14);
+                  doc.text(`DAFTAR PRESENSI SISWA KELAS ${kelas}`, 14, 20);
+                  doc.setFontSize(10);
+                  doc.text(`Mata Pelajaran: ${mapel}`, 14, 26);
+                  doc.text(`Tanggal: ${formatIndoDate(tanggal)}`, 14, 31);
+                  doc.text(`Guru Pengajar: ${namaGuru}`, 14, 36);
+                  doc.text(`Rekapitulasi: Hadir (${h}), Sakit (${s}), Izin (${i}), Alfa (${al})`, 14, 41);
+
+                  const tableData = classStudents.map((student, idx) => {
+                    const record = dayAttendance.find(at => at.nisn === student.nisn);
+                    return [
+                      idx + 1,
+                      student.nisn,
+                      student.nama,
+                      record?.status || 'Belum Absen',
+                      record?.keterangan || '-'
+                    ];
+                  });
+
+                  autoTable(doc, {
+                    startY: 46,
+                    head: [['No', 'NISN', 'Nama Siswa', 'Kehadiran', 'Keterangan']],
+                    body: tableData,
+                    theme: 'striped',
+                    headStyles: { fillColor: [22, 101, 52] }
+                  });
+                  doc.save(`Presensi_Siswa_Kelas_${kelas}_${tanggal}.pdf`);
+                }}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 bg-red-50 text-red-700 hover:bg-red-100 px-3.5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-red-150 cursor-pointer"
+              >
+                <Download size={14} /> PDF
+              </button>
+            </div>
+          </div>
+
+          {/* Table Container */}
+          <div className="p-6 overflow-y-auto max-h-[350px]">
+            <table className="w-full text-left text-sm">
+              <thead className="text-gray-400 uppercase text-[9px] font-black tracking-widest border-b border-gray-150">
+                <tr>
+                  <th className="pb-3 text-center w-12">No</th>
+                  <th className="pb-3 pl-2">Siswa</th>
+                  <th className="pb-3 text-center w-28">Status</th>
+                  <th className="pb-3 pl-4">Keterangan</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {classStudents.map((student, idx) => {
+                  const record = dayAttendance.find(at => at.nisn === student.nisn);
+                  const status = record?.status;
+                  
+                  let badgeClass = "bg-gray-100 text-gray-400";
+                  if (status === 'Hadir') badgeClass = "bg-green-100 text-green-700";
+                  else if (status === 'Sakit') badgeClass = "bg-orange-100 text-orange-700";
+                  else if (status === 'Izin') badgeClass = "bg-blue-100 text-blue-700";
+                  else if (status === 'Alfa') badgeClass = "bg-red-100 text-red-700";
+
+                  return (
+                    <tr key={student.nisn} className="hover:bg-gray-50/50 transition-colors">
+                      <td className="py-3 text-center text-gray-400 font-bold text-xs">{idx + 1}</td>
+                      <td className="py-3 pl-2">
+                        <p className="font-bold text-zinc-800 text-xs">{student.nama}</p>
+                        <p className="text-[9px] text-gray-400 font-mono">{student.nisn}</p>
+                      </td>
+                      <td className="py-3 text-center">
+                        <span className={`px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-wider ${badgeClass}`}>
+                          {status || 'Belum Absen'}
+                        </span>
+                      </td>
+                      <td className="py-3 pl-4 text-[11px] text-gray-500 italic max-w-[150px] truncate" title={record?.keterangan || ''}>
+                        {record?.keterangan || '-'}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {classStudents.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="text-center py-8 text-gray-400 font-semibold italic text-xs">
+                      Tidak ada siswa terdaftar di kelas "Kelas {kelas}".
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Footer */}
+          <div className="bg-gray-50 p-4 border-t border-gray-100 flex justify-end">
+            <button 
+              type="button"
+              onClick={() => setSelectedDetailRecap(null)} 
+              className="bg-zinc-800 hover:bg-zinc-900 text-white px-6 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-md cursor-pointer"
+            >
+              Tutup
+            </button>
           </div>
         </motion.div>
       </div>
@@ -3207,7 +3606,7 @@ export default function App() {
                     className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-3 font-bold mt-1 text-sm focus:ring-2 focus:ring-green-500"
                   >
                     <option value="">-- Pilih Mapel --</option>
-                    {(appConfig.subjects || []).map(s => <option key={s} value={s}>{s}</option>)}
+                    {activeSubjects.map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
                 <div>
@@ -3392,9 +3791,12 @@ export default function App() {
   }, [teachingSchedules, searchTermJadwal]);
 
   const filteredTeacherAttendance = useMemo(() => {
-    if (!filterGuruAbsensiClass) return teacherAttendance;
-    return teacherAttendance.filter(ta => ta.kelas === filterGuruAbsensiClass);
-  }, [teacherAttendance, filterGuruAbsensiClass]);
+    return teacherAttendance.filter(ta => {
+      const matchesClass = filterGuruAbsensiClass ? ta.kelas === filterGuruAbsensiClass : true;
+      const matchesDate = filterTanggalAbsensiGuru ? ta.tanggal === filterTanggalAbsensiGuru : true;
+      return matchesClass && matchesDate;
+    });
+  }, [teacherAttendance, filterGuruAbsensiClass, filterTanggalAbsensiGuru]);
 
   const groupedJadwal = useMemo(() => {
     const groups: any = {};
@@ -3647,6 +4049,26 @@ export default function App() {
         <AnimatePresence mode="wait">
           {activePanel === 'home' && (
             <motion.div key="home" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-8">
+              {/* Today's Date Banner */}
+              <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 relative overflow-hidden group">
+                <div className="absolute top-0 right-0 w-48 h-48 bg-green-50 rounded-full blur-3xl opacity-30 -mr-12 -mt-12 transition-transform group-hover:scale-110 duration-500"></div>
+                <div className="flex items-center gap-4 relative z-10">
+                  <div className="w-12 h-12 bg-green-50 text-green-700 rounded-2xl flex items-center justify-center border border-green-100 group-hover:rotate-6 transition-transform">
+                    <Calendar size={24} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest leading-none">Hari Ini / Tanggal</p>
+                    <h2 className="text-xl sm:text-2xl font-black text-green-950 mt-1 whitespace-nowrap">
+                      {new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                    </h2>
+                  </div>
+                </div>
+                <div className="px-4 py-2 bg-green-50 text-green-800 rounded-2xl text-[10px] font-black uppercase tracking-widest relative z-10 flex items-center gap-2 border border-green-100">
+                  <span className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse"></span>
+                  Layanan Aktif / Real-time
+                </div>
+              </div>
+
               {/* Stats Grid */}
               <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-4">
                 {[
@@ -3967,28 +4389,43 @@ export default function App() {
                     <p className="text-zinc-500 font-medium">Monitoring pergerakan data presensi sekolah</p>
                   </div>
                   <div className="flex items-center gap-3">
-                    <select 
-                      value={pageSize} 
-                      onChange={e => setPageSize(parseInt(e.target.value))}
-                      className="bg-zinc-100 text-zinc-600 px-3 py-2 rounded-xl text-[10px] font-black uppercase border-0 focus:ring-0"
-                    >
-                      {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
-                    </select>
-                    <div className="relative flex items-center gap-2">
-                       {session?.role === 'Guru' && session?.isWali && (
-                         <span className="absolute -top-3 right-0 bg-red-100 text-red-600 text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-widest border border-red-200">Terkunci</span>
-                       )}
-                       <select 
-                         value={analysisClass} 
-                         onChange={e => setAnalysisClass(e.target.value)}
-                         disabled={session?.role === 'Guru' && session?.isWali}
-                         className="bg-zinc-50 border-0 rounded-xl px-4 py-2 font-bold text-sm disabled:opacity-50 disabled:cursor-not-allowed min-w-[120px]"
-                       >
-                         {!(session?.role === 'Guru' && session?.isWali) && <option value="">Semua Kelas</option>}
-                         {(classrooms || [])
-                           .filter(c => (session?.role === 'Guru' && session?.isWali) ? c.nama === session?.kelas : true)
-                           .map(c => <option key={c.nama} value={c.nama}>{c.nama}</option>)}
-                       </select>
+                    <div className="flex flex-col">
+                      <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest mb-1 pl-1">Pilih Bulan</label>
+                      <input 
+                        type="month"
+                        value={analysisMonth}
+                        onChange={e => setAnalysisMonth(e.target.value)}
+                        className="bg-zinc-100 border-0 rounded-xl px-3 py-2 font-bold text-xs"
+                      />
+                    </div>
+                    <div className="flex flex-col">
+                      <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest mb-1 pl-1">Baris</label>
+                      <select 
+                        value={pageSize} 
+                        onChange={e => setPageSize(parseInt(e.target.value))}
+                        className="bg-zinc-100 text-zinc-600 px-3 py-2 rounded-xl text-xs font-bold border-0 focus:ring-0"
+                      >
+                        {[10, 20, 50, 100].map(v => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex flex-col relative justify-end">
+                      <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest mb-1 pl-1">Kelas</label>
+                      <div className="relative flex items-center gap-2">
+                         {session?.role === 'Guru' && session?.isWali && (
+                           <span className="absolute -top-3 right-0 bg-red-100 text-red-600 text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-widest border border-red-200">Terkunci</span>
+                         )}
+                         <select 
+                           value={analysisClass} 
+                           onChange={e => setAnalysisClass(e.target.value)}
+                           disabled={session?.role === 'Guru' && session?.isWali}
+                           className="bg-zinc-50 border-0 rounded-xl px-4 py-2 font-bold text-xs disabled:opacity-50 disabled:cursor-not-allowed min-w-[120px]"
+                         >
+                           {!(session?.role === 'Guru' && session?.isWali) && <option value="">Semua Kelas</option>}
+                           {(classrooms || [])
+                             .filter(c => (session?.role === 'Guru' && session?.isWali) ? c.nama === session?.kelas : true)
+                             .map(c => <option key={c.nama} value={c.nama}>{c.nama}</option>)}
+                         </select>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -4000,13 +4437,13 @@ export default function App() {
                    </h3>
                    <div className="h-64 relative">
                       {classrooms.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                           <BarChart data={classrooms.filter(c => analysisClass ? c.nama === analysisClass : true).map(c => {
-                            const currentMonthPrefix = currentDate.slice(0, 7);
+                            const currentMonthPrefix = analysisMonth;
                             const classAttendance = (attendance || []).filter(a => a.kelas === c.nama && a.tanggal.startsWith(currentMonthPrefix));
                             const totalSiswa = (students || []).filter(s => s.kelas === c.nama).length;
                             
-                            const daysPassed = effectiveDaysThisMonth.length;
+                            const daysPassed = effectiveDaysForAnalysisMonth.length;
                             const totalPeluang = totalSiswa * daysPassed;
                             const hadirCount = classAttendance.filter(a => a.status === 'Hadir' || a.status === 'Izin' || a.status === 'Sakit').length;
                             return {
@@ -4026,17 +4463,17 @@ export default function App() {
                       )}
                    </div>
                    <div className="mt-6">
-                      <h4 className="text-[10px] font-black text-red-600 uppercase tracking-widest mb-3">Siswa Kehadiran &lt; 80% ({new Date().toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })})</h4>
+                      <h4 className="text-[10px] font-black text-red-600 uppercase tracking-widest mb-3">Siswa Kehadiran &lt; 80% ({getMonthYearText(analysisMonth)})</h4>
                       <div className="max-h-48 overflow-y-auto space-y-2">
                         {(() => {
-                           const daysCount = effectiveDaysThisMonth.length;
+                           const daysCount = effectiveDaysForAnalysisMonth.length;
                            if (daysCount === 0) return (
                              <div className="text-center py-4 text-gray-400 text-[10px] font-bold uppercase italic">Belum ada hari sekolah bulan ini</div>
                            );
 
                            const filteredStudents = (students || []).filter(s => analysisClass ? s.kelas === analysisClass : true);
                            const lowAttendanceSiswa = filteredStudents.filter(s => {
-                             const currentMonthString = new Date().toISOString().slice(0, 7);
+                             const currentMonthString = analysisMonth;
                              const studentAttendance = (attendance || []).filter(a => a.nisn === s.nisn && a.tanggal.startsWith(currentMonthString));
                              const hadir = studentAttendance.filter(a => ['Hadir', 'Izin', 'Sakit'].includes(a.status)).length;
                              const perc = (hadir / daysCount) * 100;
@@ -4048,7 +4485,7 @@ export default function App() {
                            );
 
                            return lowAttendanceSiswa.map(s => {
-                             const currentMonthString = new Date().toISOString().slice(0, 7);
+                             const currentMonthString = analysisMonth;
                              const studentAttendance = (attendance || []).filter(a => a.nisn === s.nisn && a.tanggal.startsWith(currentMonthString));
                              const hadir = studentAttendance.filter(a => ['Hadir', 'Izin', 'Sakit'].includes(a.status)).length;
                              const perc = Math.round((hadir / daysCount) * 100);
@@ -4075,21 +4512,22 @@ export default function App() {
                    </h3>
                    <div className="h-64 relative">
                       {teachers.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                           <BarChart data={teachers.filter(t => {
                              if (!analysisClass) return true;
                              const scheds = (teachingSchedules || []).filter(ts => ts.nip === t.nip);
                              return scheds.some(s => s.kelas === analysisClass);
                            }).map(t => {
                              const schedules = (teachingSchedules || []).filter(ts => ts.nip === t.nip && (analysisClass ? ts.kelas === analysisClass : true));
-                             const now = new Date();
-                             const year = now.getFullYear();
-                             const month = now.getMonth();
+                             const [y, m] = analysisMonth.split('-').map(Number);
+                             const targetMonth = m - 1;
+                             const isCurrentMonth = analysisMonth === currentDate.slice(0, 7);
+                             const upToDay = isCurrentMonth ? new Date().getDate() : undefined;
                              const totalTarget = (schedules || []).reduce((sum, s) => {
-                               const occ = countDaysInMonth(year, month, s.hari, holidays);
+                               const occ = countDaysInMonth(y, targetMonth, s.hari, holidays, upToDay);
                                return sum + (occ * (Number(s.targetPertemuan) || 0));
                              }, 0);
-                             const currentMonth = now.toISOString().slice(0, 7);
+                             const currentMonth = analysisMonth;
                              const actual = (teacherAttendance || []).filter(ta => ta.nip === t.nip && (analysisClass ? ta.kelas === analysisClass : true) && ta.tanggal.startsWith(currentMonth)).length;
                              return {
                                name: (t.nama || 'Guru').split(' ')[0],
@@ -4109,7 +4547,7 @@ export default function App() {
                    </div>
                    <div className="mt-6">
                       <h4 className="text-[10px] font-black text-red-600 uppercase tracking-widest mb-3">
-                         {session?.role === 'Guru' && session?.isWali ? `Performa Guru di ${session.kelas} < 50%` : 'Guru Performa < 50% (Bulan Ini)'}
+                         {session?.role === 'Guru' && session?.isWali ? `Performa Guru di ${session.kelas} < 50% (${getMonthYearText(analysisMonth)})` : `Guru Performa < 50% (${getMonthYearText(analysisMonth)})`}
                        </h4>
                       <div className="max-h-48 overflow-y-auto space-y-2">
                         {(teachers || []).filter(t => {
@@ -4118,14 +4556,15 @@ export default function App() {
                            return scheds.some(s => s.kelas === analysisClass);
                         }).map(t => {
                           const schedules = (teachingSchedules || []).filter(ts => ts.nip === t.nip && (analysisClass ? ts.kelas === analysisClass : true));
-                          const now = new Date();
-                          const year = now.getFullYear();
-                          const month = now.getMonth();
+                          const [y, m] = analysisMonth.split('-').map(Number);
+                          const targetMonth = m - 1;
+                          const isCurrentMonth = analysisMonth === currentDate.slice(0, 7);
+                          const upToDay = isCurrentMonth ? new Date().getDate() : undefined;
                           const totalTarget = (schedules || []).reduce((sum, s) => {
-                            const occ = countDaysInMonth(year, month, s.hari, holidays, now.getDate());
+                            const occ = countDaysInMonth(y, targetMonth, s.hari, holidays, upToDay);
                             return sum + (occ * (Number(s.targetPertemuan) || 1));
                           }, 0);
-                          const currentMonth = now.toISOString().slice(0, 7);
+                          const currentMonth = analysisMonth;
                           const actual = (teacherAttendance || []).filter(ta => ta.nip === t.nip && (analysisClass ? ta.kelas === analysisClass : true) && ta.tanggal.startsWith(currentMonth)).length;
                           const perc = totalTarget > 0 ? (actual / totalTarget) * 100 : 0;
                           if (perc < 50 && totalTarget > 0) {
@@ -4667,27 +5106,11 @@ export default function App() {
                  {session?.role === 'Admin' && (
                    <button
                      onClick={() => {
-                       setConfirmModal({
-                         show: true,
-                         title: 'Reset Seluruh Absensi Siswa?',
-                         entityName: 'SELURUH DATA ABSENSI SISWA',
-                         message: 'Aksi ini akan menghapus permanen seluruh data riwayat presensi siswa di database Firestore. Aksi ini tidak dapat dibatalkan.',
-                         onConfirm: async () => {
-                           toggleLoader(true);
-                           try {
-                             await firestoreService.resetAbsensiSiswa();
-                             triggerSuccess("BERHASIL RESET", "Seluruh data absensi siswa telah berhasil dihapus secara permanen.");
-                           } catch (err) {
-                             alert("Gagal melakukan reset data.");
-                           } finally {
-                             toggleLoader(false);
-                           }
-                         }
-                       });
+                       setResetAbsensiTarget('Siswa');
                      }}
                      className="bg-red-600 hover:bg-red-700 text-white px-4 py-2.5 rounded-xl text-[10px] font-black tracking-widest uppercase flex items-center gap-2 transition-all shadow-sm"
                    >
-                     <Trash2 size={14} /> Reset Seluruh Absensi Siswa
+                     <Trash2 size={14} /> Reset Absensi Siswa
                    </button>
                  )}
                </div>
@@ -4717,6 +5140,15 @@ export default function App() {
                       />
                     </div>
                   </div>
+                  <div className="flex-1">
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Filter Tanggal</label>
+                    <input 
+                      type="date"
+                      value={filterTanggalAbsensi}
+                      onChange={e => setFilterTanggalAbsensi(e.target.value)}
+                      className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-2 font-bold text-sm mt-1"
+                    />
+                  </div>
                   <div className="flex items-end gap-2">
                     <select 
                       value={pageSize} 
@@ -4726,7 +5158,7 @@ export default function App() {
                       {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
                     </select>
                     <button 
-                      onClick={() => { setFilterClassAbsensi(''); setFilterNamaAbsensi(''); }}
+                      onClick={() => { setFilterClassAbsensi(''); setFilterNamaAbsensi(''); setFilterTanggalAbsensi(''); }}
                       className="bg-zinc-100 text-zinc-500 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-200"
                     >
                       Reset
@@ -4753,7 +5185,8 @@ export default function App() {
                       .filter(a => {
                         const matchesClass = filterClassAbsensi ? a.kelas === filterClassAbsensi : true;
                         const matchesName = filterNamaAbsensi ? a.nama.toLowerCase().includes(filterNamaAbsensi.toLowerCase()) : true;
-                        return matchesClass && matchesName;
+                        const matchesDate = filterTanggalAbsensi ? a.tanggal === filterTanggalAbsensi : true;
+                        return matchesClass && matchesName && matchesDate;
                       })
                       .sort((a, b) => b.tanggal.localeCompare(a.tanggal) || b.jam.localeCompare(a.jam))
                       .slice(pagination.absensiSiswa, pagination.absensiSiswa + pageSize).map((a, i) => (
@@ -4849,63 +5282,64 @@ export default function App() {
 
           {activePanel === 'absensi-guru' && (
             <motion.div key="absensi-guru" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-               <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
+               <div className="flex flex-col lg:flex-row gap-3 justify-between items-start lg:items-center mb-6">
                  <div className="flex flex-col">
                    <h2 className="text-xl font-bold flex items-center gap-2 text-zinc-900">
                      <Clock size={20} className="text-green-700" /> Log Presensi Mengajar Guru
                    </h2>
-                   <p className="text-xs text-zinc-400 font-medium font-semibold">Hari Ini: {formatIndoDate(new Date().toISOString().split('T')[0])}</p>
+                   <p className="text-xs text-zinc-400 font-medium font-semibold">Daftar riwayat presensi tatap muka dan aktivitas mengajar</p>
                  </div>
-                 <div className="flex items-center gap-2">
-                   {session?.role === 'Admin' && (
-                     <button
-                       onClick={() => {
-                         setConfirmModal({
-                           show: true,
-                           title: 'Reset Seluruh Absensi Guru?',
-                           entityName: 'SELURUH DATA ABSENSI GURU',
-                           message: 'Aksi ini akan menghapus semua riwayat presensi mengajar guru dari database secara permanen. Aksi ini tidak dapat dibatalkan.',
-                           onConfirm: async () => {
-                             toggleLoader(true);
-                             try {
-                               await firestoreService.resetAbsensiGuru();
-                               triggerSuccess("BERHASIL RESET", "Seluruh data absensi guru telah berhasil dihapus secara permanen.");
-                             } catch (err) {
-                               alert("Gagal melakukan reset data.");
-                             } finally {
-                               toggleLoader(false);
-                             }
-                           }
-                         });
-                       }}
-                       className="bg-red-600 hover:bg-red-700 text-white px-4 py-2.5 rounded-xl text-[10px] font-black tracking-widest uppercase flex items-center gap-2 transition-all shadow-sm"
-                     >
-                       <Trash2 size={14} /> Reset Absensi Guru
-                     </button>
-                   )}
-                   <select 
-                      value={pageSize} 
-                      onChange={e => setPageSize(parseInt(e.target.value))}
-                      className="bg-zinc-100 text-zinc-600 px-3 py-2.5 rounded-xl text-[10px] font-black uppercase border-0 focus:ring-0"
-                    >
-                      {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
-                    </select>
+                 <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+                    {session?.role === 'Admin' && (
+                      <button
+                        onClick={() => {
+                          setResetAbsensiTarget('Guru');
+                        }}
+                        className="bg-red-600 hover:bg-red-700 text-white px-4 py-2.5 rounded-xl text-[10px] font-black tracking-widest uppercase flex items-center gap-2 transition-all shadow-sm"
+                      >
+                        <Trash2 size={14} /> Reset Absensi Guru
+                      </button>
+                    )}
                     <select 
-                      value={filterGuruAbsensiClass} 
-                      onChange={e => {
-                        setFilterGuruAbsensiClass(e.target.value);
-                        setPagination(prev => ({ ...prev, absensiGuru: 0 }));
-                      }}
-                      className="bg-zinc-100 text-zinc-600 px-4 py-2.5 rounded-xl text-xs font-semibold border-0 focus:ring-0 cursor-pointer animate-fade-in"
-                    >
-                      <option value="">Semua Kelas</option>
-                      {classrooms.map(c => <option key={c.nama} value={c.nama}>{c.nama}</option>)}
-                    </select>
-                    <select style={{ display: 'none' }}
-                    >
-                      {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
-                    </select>
-                 </div>
+                       value={pageSize} 
+                       onChange={e => setPageSize(parseInt(e.target.value))}
+                       className="bg-zinc-100 text-zinc-600 px-3 py-2.5 rounded-xl text-[10px] font-black uppercase border-0 focus:ring-0 cursor-pointer"
+                     >
+                       {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
+                     </select>
+                     <select 
+                       value={filterGuruAbsensiClass} 
+                       onChange={e => {
+                         setFilterGuruAbsensiClass(e.target.value);
+                         setPagination(prev => ({ ...prev, absensiGuru: 0 }));
+                       }}
+                       className="bg-zinc-100 text-zinc-600 px-4 py-2.5 rounded-xl text-xs font-semibold border-0 focus:ring-0 cursor-pointer animate-fade-in"
+                     >
+                       <option value="">Semua Kelas</option>
+                       {classrooms.map(c => <option key={c.nama} value={c.nama}>{c.nama}</option>)}
+                     </select>
+                     <input 
+                       type="date"
+                       value={filterTanggalAbsensiGuru}
+                       onChange={e => {
+                         setFilterTanggalAbsensiGuru(e.target.value);
+                         setPagination(prev => ({ ...prev, absensiGuru: 0 }));
+                       }}
+                       className="bg-zinc-100 text-zinc-600 px-4 py-2.5 rounded-xl text-xs font-semibold border-0 focus:ring-0 cursor-pointer animate-fade-in"
+                     />
+                     {(filterGuruAbsensiClass || filterTanggalAbsensiGuru) && (
+                       <button
+                         onClick={() => {
+                           setFilterGuruAbsensiClass('');
+                           setFilterTanggalAbsensiGuru('');
+                           setPagination(prev => ({ ...prev, absensiGuru: 0 }));
+                         }}
+                         className="bg-zinc-200 hover:bg-zinc-300 text-zinc-700 font-bold text-xs px-4 py-2.5 rounded-xl transition-all"
+                       >
+                         Clear
+                       </button>
+                     )}
+                  </div>
                </div>
                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                 <div className="overflow-x-auto">
@@ -4981,42 +5415,54 @@ export default function App() {
             </motion.div>
           )}
 
-          {activePanel === 'rekap-mapel' && (
-            <motion.div key="rekap-mapel" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-               <div className="bg-white rounded-3xl shadow-sm border border-gray-100 p-8 mb-6">
-                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-                   <div className="flex-1">
-                     <h2 className="text-xl font-bold flex items-center gap-2 text-zinc-900">
-                       <FileBarChart className="text-green-700" /> Rekap Presensi Mapel
-                     </h2>
-                     <p className="text-xs text-gray-500 font-medium mt-1 italic">Laporan performa pengajar dan kehadiran siswa di kelas.</p>
-                   </div>
-                   <div className="flex items-center gap-2">
-                      <select 
-                        value={pageSize} 
-                        onChange={e => setPageSize(parseInt(e.target.value))}
-                        className="bg-zinc-100 text-zinc-600 px-3 py-2 rounded-xl text-[10px] font-black uppercase border-0 focus:ring-0"
-                      >
-                        {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
-                      </select>
-                   </div>
-                   <div className="flex items-center gap-3 w-full md:w-auto">
-                     <button 
-                        onClick={() => {
-                          const dataForExcel = teacherAttendance
-                            .filter(a => {
-                              const matchesNip = rekapMapelFilter.nip ? a.nip === rekapMapelFilter.nip : (session?.role !== 'Admin' ? a.nip === session?.uid : true);
-                              const matchesDate = rekapMapelFilter.tanggal ? a.tanggal === rekapMapelFilter.tanggal : true;
-                              const matchesMapel = rekapMapelFilter.mapel ? a.mapel === rekapMapelFilter.mapel : true;
-                              return matchesNip && matchesDate && matchesMapel;
-                            })
-                            .map(a => {
+          {activePanel === 'rekap-mapel' && (() => {
+            const targetNipForClasses = rekapMapelFilter.nip || (session?.role !== 'Admin' ? session?.uid : '');
+            const allowedClasses = targetNipForClasses ? Array.from(new Set(
+              teachingSchedules
+                .filter(s => s.nip === targetNipForClasses)
+                .map(s => s.kelas)
+                .filter(Boolean)
+            )) : classrooms.map(c => c.nama);
+
+            const filteredRecap = teacherAttendance.filter(a => {
+              const matchesNip = rekapMapelFilter.nip ? a.nip === rekapMapelFilter.nip : (session?.role !== 'Admin' ? a.nip === session?.uid : true);
+              const matchesBulan = rekapMapelFilter.bulan ? a.tanggal.startsWith(rekapMapelFilter.bulan) : true;
+              const matchesMapel = rekapMapelFilter.mapel ? a.mapel === rekapMapelFilter.mapel : true;
+              const matchesKelas = rekapMapelFilter.kelas ? a.kelas === rekapMapelFilter.kelas : true;
+              return matchesNip && matchesBulan && matchesMapel && matchesKelas;
+            });
+
+            return (
+              <motion.div key="rekap-mapel" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                 <div className="bg-white rounded-3xl shadow-sm border border-gray-100 p-8 mb-6">
+                   <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+                     <div className="flex-1">
+                       <h2 className="text-xl font-bold flex items-center gap-2 text-zinc-900">
+                         <FileBarChart className="text-green-700" /> Rekap Presensi Mapel
+                       </h2>
+                       <p className="text-xs text-gray-500 font-medium mt-1 italic">Laporan performa pengajar dan kehadiran siswa di kelas.</p>
+                     </div>
+                     <div className="flex items-center gap-2">
+                        <select 
+                          value={pageSize} 
+                          onChange={e => setPageSize(parseInt(e.target.value))}
+                          className="bg-zinc-100 text-zinc-600 px-3 py-2 rounded-xl text-[10px] font-black uppercase border-0 focus:ring-0"
+                        >
+                          {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
+                        </select>
+                     </div>
+                     <div className="flex items-center gap-3 w-full md:w-auto">
+                       <button 
+                          onClick={() => {
+                            const dataForExcel = filteredRecap.map((a, idx) => {
                               const classAttendance = attendance.filter(sa => sa.kelas === a.kelas && sa.tanggal === a.tanggal);
                               return {
+                                'No': idx + 1,
+                                'Hari': getIndonesianDay(a.tanggal),
+                                'Tanggal': a.tanggal,
                                 'Nama Guru': a.nama,
                                 'Mapel': a.mapel || '-',
                                 'Kelas': a.kelas,
-                                'Tanggal': a.tanggal,
                                 'Hadir': classAttendance.filter(sa => sa.status === 'Hadir').length,
                                 'Sakit': classAttendance.filter(sa => sa.status === 'Sakit').length,
                                 'Izin': classAttendance.filter(sa => sa.status === 'Izin').length,
@@ -5025,171 +5471,187 @@ export default function App() {
                                 'Status': 'Mengajar'
                               };
                             });
-                          const ws = XLSX.utils.json_to_sheet(dataForExcel);
-                          const wb = XLSX.utils.book_new();
-                          XLSX.utils.book_append_sheet(wb, ws, "Rekap Mapel");
-                          XLSX.writeFile(wb, `Rekap_Mapel_${rekapMapelFilter.tanggal}.xlsx`);
-                        }}
-                        className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-green-50 text-green-700 px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-green-100 transition-all border border-green-100"
-                     >
-                       <FileSpreadsheet size={16} /> Excel
-                     </button>
-                     <button 
-                        onClick={() => {
-                          const doc = new jsPDF('l', 'mm', 'a4');
-                          doc.setFontSize(16);
-                          doc.text('REKAPITULASI MENGAJAR DAN PRESENSI MAPEL', 14, 20);
-                          doc.setFontSize(10);
-                          doc.text(`Tanggal: ${rekapMapelFilter.tanggal}`, 14, 28);
-                          
-                          const filtered = teacherAttendance.filter(a => {
-                            const matchesNip = rekapMapelFilter.nip ? a.nip === rekapMapelFilter.nip : (session?.role !== 'Admin' ? a.nip === session?.uid : true);
-                            const matchesDate = rekapMapelFilter.tanggal ? a.tanggal === rekapMapelFilter.tanggal : true;
-                            const matchesMapel = rekapMapelFilter.mapel ? a.mapel === rekapMapelFilter.mapel : true;
-                            return matchesNip && matchesDate && matchesMapel;
-                          });
+                            const ws = XLSX.utils.json_to_sheet(dataForExcel);
+                            const wb = XLSX.utils.book_new();
+                            XLSX.utils.book_append_sheet(wb, ws, "Rekap Mapel");
+                            XLSX.writeFile(wb, `Rekap_Mapel_${rekapMapelFilter.bulan}.xlsx`);
+                          }}
+                          className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-green-50 text-green-700 px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-green-100 transition-all border border-green-100"
+                       >
+                         <FileSpreadsheet size={16} /> Excel
+                       </button>
+                       <button 
+                          onClick={() => {
+                            const doc = new jsPDF('l', 'mm', 'a4');
+                            doc.setFontSize(16);
+                            doc.text('REKAPITULASI MENGAJAR DAN PRESENSI MAPEL', 14, 20);
+                            doc.setFontSize(10);
+                            doc.text(`Bulan: ${rekapMapelFilter.bulan}`, 14, 28);
+                            
+                            const tableData = filteredRecap.map((a, idx) => {
+                              const classAttendance = attendance.filter(sa => sa.kelas === a.kelas && sa.tanggal === a.tanggal);
+                              return [
+                                idx + 1,
+                                getIndonesianDay(a.tanggal),
+                                a.tanggal,
+                                a.nama,
+                                a.mapel || '-',
+                                a.kelas,
+                                classAttendance.filter(sa => sa.status === 'Hadir').length,
+                                classAttendance.filter(sa => sa.status === 'Sakit').length,
+                                classAttendance.filter(sa => sa.status === 'Izin').length,
+                                classAttendance.filter(sa => sa.status === 'Alfa').length,
+                                classAttendance.length,
+                                'Mengajar'
+                              ];
+                            });
 
-                          const tableData = filtered.map((a, idx) => {
-                            const classAttendance = attendance.filter(sa => sa.kelas === a.kelas && sa.tanggal === a.tanggal);
-                            return [
-                              idx + 1,
-                              a.nama,
-                              a.mapel || '-',
-                              a.kelas,
-                              classAttendance.filter(sa => sa.status === 'Hadir').length,
-                              classAttendance.filter(sa => sa.status === 'Sakit').length,
-                              classAttendance.filter(sa => sa.status === 'Izin').length,
-                              classAttendance.filter(sa => sa.status === 'Alfa').length,
-                              classAttendance.length,
-                              'Mengajar'
-                            ];
-                          });
+                            autoTable(doc, {
+                              startY: 35,
+                              head: [['No', 'Hari', 'Tanggal', 'Nama Guru', 'Mapel', 'Kelas', 'H', 'S', 'I', 'A', 'Total', 'Status']],
+                              body: tableData,
+                              theme: 'striped',
+                              headStyles: { fillColor: [22, 101, 52] }
+                            });
+                            doc.save(`Rekap_Mapel_${rekapMapelFilter.bulan}.pdf`);
+                          }}
+                          className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-red-50 text-red-700 px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-red-100 transition-all border border-red-100"
+                       >
+                         <Download size={16} /> PDF
+                       </button>
+                     </div>
+                   </div>
 
-                          autoTable(doc, {
-                            startY: 35,
-                            head: [['No', 'Nama Guru', 'Mapel', 'Kelas', 'H', 'S', 'I', 'A', 'Total', 'Status']],
-                            body: tableData,
-                            theme: 'striped',
-                            headStyles: { fillColor: [22, 101, 52] }
-                          });
-                          doc.save(`Rekap_Mapel_${rekapMapelFilter.tanggal}.pdf`);
-                        }}
-                        className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-red-50 text-red-700 px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-red-100 transition-all border border-red-100"
-                     >
-                       <Download size={16} /> PDF
-                     </button>
+                   <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-8">
+                      <div>
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Filter Guru</label>
+                        <select 
+                          disabled={session?.role !== 'Admin'}
+                          value={session?.role !== 'Admin' ? session?.uid : rekapMapelFilter.nip}
+                          onChange={e => setRekapMapelFilter({...rekapMapelFilter, nip: e.target.value, mapel: '', kelas: ''})}
+                          className="w-full bg-gray-50 border-0 rounded-xl px-4 py-3 font-bold text-sm mt-1 disabled:opacity-50"
+                        >
+                          {session?.role === 'Admin' ? (
+                            <>
+                              <option value="">Semua Guru</option>
+                              {teachers.filter(t => t.role !== 'Siswa').map(t => <option key={t.nip} value={t.nip}>{t.nama}</option>)}
+                            </>
+                          ) : (
+                            <option value={session?.uid}>{session?.name}</option>
+                          )}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Filter Mapel</label>
+                        <select 
+                          value={rekapMapelFilter.mapel}
+                          onChange={e => setRekapMapelFilter({...rekapMapelFilter, mapel: e.target.value})}
+                          className="w-full bg-gray-50 border-0 rounded-xl px-4 py-3 font-bold text-sm mt-1"
+                        >
+                          <option value="">Semua Mapel</option>
+                          {Array.from(new Set(teachingSchedules
+                            .filter(s => {
+                               const targetNip = rekapMapelFilter.nip || (session?.role !== 'Admin' ? session?.uid : '');
+                               return targetNip ? s.nip === targetNip : true;
+                            })
+                            .map(s => s.mapel)
+                            .filter(Boolean)
+                          )).map(m => <option key={m} value={m}>{m}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Filter Kelas</label>
+                        <select 
+                          value={rekapMapelFilter.kelas}
+                          onChange={e => setRekapMapelFilter({...rekapMapelFilter, kelas: e.target.value})}
+                          className="w-full bg-gray-50 border-0 rounded-xl px-4 py-3 font-bold text-sm mt-1"
+                        >
+                          <option value="">Semua Kelas</option>
+                          {allowedClasses.map(k => <option key={k} value={k}>{k}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Pilih Bulan</label>
+                        <input 
+                          type="month"
+                          value={rekapMapelFilter.bulan}
+                          onChange={e => setRekapMapelFilter({...rekapMapelFilter, bulan: e.target.value})}
+                          className="w-full bg-gray-50 border-0 rounded-xl px-4 py-3 font-bold text-sm mt-1"
+                        />
+                      </div>
                    </div>
                  </div>
 
-                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
-                    <div>
-                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Filter Guru</label>
-                      <select 
-                        disabled={session?.role !== 'Admin'}
-                        value={session?.role !== 'Admin' ? session?.uid : rekapMapelFilter.nip}
-                        onChange={e => setRekapMapelFilter({...rekapMapelFilter, nip: e.target.value, mapel: ''})}
-                        className="w-full bg-gray-50 border-0 rounded-xl px-4 py-3 font-bold text-sm mt-1 disabled:opacity-50"
-                      >
-                        {session?.role === 'Admin' ? (
-                          <>
-                            <option value="">Semua Guru</option>
-                            {teachers.filter(t => t.role !== 'Siswa').map(t => <option key={t.nip} value={t.nip}>{t.nama}</option>)}
-                          </>
-                        ) : (
-                          <option value={session?.uid}>{session?.name}</option>
-                        )}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Filter Mapel</label>
-                      <select 
-                        value={rekapMapelFilter.mapel}
-                        onChange={e => setRekapMapelFilter({...rekapMapelFilter, mapel: e.target.value})}
-                        className="w-full bg-gray-50 border-0 rounded-xl px-4 py-3 font-bold text-sm mt-1"
-                      >
-                        <option value="">Semua Mapel</option>
-                        {Array.from(new Set(teachingSchedules
-                          .filter(s => {
-                             const targetNip = rekapMapelFilter.nip || (session?.role !== 'Admin' ? session?.uid : '');
-                             return targetNip ? s.nip === targetNip : true;
-                          })
-                          .map(s => s.mapel)
-                          .filter(Boolean)
-                        )).map(m => <option key={m} value={m}>{m}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Pilih Tanggal</label>
-                      <input 
-                        type="date"
-                        value={rekapMapelFilter.tanggal}
-                        onChange={e => setRekapMapelFilter({...rekapMapelFilter, tanggal: e.target.value})}
-                        className="w-full bg-gray-50 border-0 rounded-xl px-4 py-3 font-bold text-sm mt-1"
-                      />
-                    </div>
+                 <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
+                   <div className="overflow-x-auto">
+                     <table className="w-full text-left text-sm min-w-[1000px]">
+                       <thead className="bg-gray-50 text-gray-400 uppercase text-[10px] font-black tracking-widest border-b border-gray-100">
+                         <tr>
+                           <th className="px-6 py-4 text-center">No</th>
+                           <th className="px-6 py-4 text-nowrap">Hari</th>
+                           <th className="px-6 py-4 text-nowrap">Tanggal</th>
+                           <th className="px-6 py-4 text-nowrap">Nama Guru</th>
+                           <th className="px-6 py-4 text-nowrap">Mapel</th>
+                           <th className="px-6 py-4 text-nowrap">Kelas</th>
+                           <th className="px-6 py-4 text-center">H</th>
+                           <th className="px-6 py-4 text-center">S</th>
+                           <th className="px-6 py-4 text-center">I</th>
+                           <th className="px-6 py-4 text-center">A</th>
+                           <th className="px-6 py-4 text-center">Detail</th>
+                           <th className="px-6 py-4 text-nowrap">Status</th>
+                         </tr>
+                       </thead>
+                       <tbody className="divide-y divide-gray-50">
+                         {filteredRecap.map((a, i) => {
+                           const classAttendance = attendance.filter(sa => sa.kelas === a.kelas && sa.tanggal === a.tanggal);
+                           const h = classAttendance.filter(sa => sa.status === 'Hadir').length;
+                           const s = classAttendance.filter(sa => sa.status === 'Sakit').length;
+                           const iz = classAttendance.filter(sa => sa.status === 'Izin').length;
+                           const al = classAttendance.filter(sa => sa.status === 'Alfa').length;
+                           return (
+                             <tr key={a.id} className="hover:bg-gray-50">
+                               <td className="px-6 py-4 text-center text-gray-400 font-bold">{i + 1}</td>
+                               <td className="px-6 py-4 font-bold text-zinc-600 text-xs">{getIndonesianDay(a.tanggal)}</td>
+                               <td className="px-6 py-4 font-bold text-zinc-600 text-xs text-nowrap">{a.tanggal}</td>
+                               <td className="px-6 py-4 font-bold">{a.nama}</td>
+                               <td className="px-6 py-4 text-green-700 font-black text-xs uppercase">{a.mapel || '-'}</td>
+                               <td className="px-6 py-4 font-bold">{a.kelas}</td>
+                               <td className="px-6 py-4 text-center">
+                                 <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded-full text-[10px] font-black">{h}</span>
+                               </td>
+                               <td className="px-6 py-4 text-center">
+                                 <span className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full text-[10px] font-black">{s}</span>
+                               </td>
+                               <td className="px-6 py-4 text-center">
+                                 <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full text-[10px] font-black">{iz}</span>
+                               </td>
+                               <td className="px-6 py-4 text-center">
+                                 <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded-full text-[10px] font-black">{al}</span>
+                               </td>
+                               <td className="px-6 py-4 text-center font-black">
+                                  <button
+                                    onClick={() => setSelectedDetailRecap({
+                                      kelas: a.kelas,
+                                      tanggal: a.tanggal,
+                                      mapel: a.mapel || '-',
+                                      namaGuru: a.nama
+                                    })}
+                                    className="text-white bg-green-600 hover:bg-green-700 hover:shadow-md px-3 py-1.5 rounded-xl text-xs font-black tracking-wider uppercase transition-all shadow-sm inline-flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <Eye size={12} strokeWidth={2.5} /> Detail
+                                  </button>
+                                </td>
+                               <td className="px-6 py-4 italic text-gray-500 font-medium">Mengajar</td>
+                             </tr>
+                           );
+                         })}
+                       </tbody>
+                     </table>
+                   </div>
                  </div>
-               </div>
-
-               <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
-                 <div className="overflow-x-auto">
-                   <table className="w-full text-left text-sm min-w-[1000px]">
-                     <thead className="bg-gray-50 text-gray-400 uppercase text-[10px] font-black tracking-widest border-b border-gray-100">
-                       <tr>
-                         <th className="px-6 py-4 text-center">No</th>
-                         <th className="px-6 py-4 text-nowrap">Nama Guru</th>
-                         <th className="px-6 py-4 text-nowrap">Mapel</th>
-                         <th className="px-6 py-4 text-nowrap">Kelas</th>
-                         <th className="px-6 py-4 text-center">H</th>
-                         <th className="px-6 py-4 text-center">S</th>
-                         <th className="px-6 py-4 text-center">I</th>
-                         <th className="px-6 py-4 text-center">A</th>
-                         <th className="px-6 py-4 text-center">Total</th>
-                         <th className="px-6 py-4 text-nowrap">Status</th>
-                       </tr>
-                     </thead>
-                     <tbody className="divide-y divide-gray-50">
-                       {teacherAttendance
-                        .filter(a => {
-                          const matchesNip = rekapMapelFilter.nip ? a.nip === rekapMapelFilter.nip : (session?.role !== 'Admin' ? a.nip === session?.uid : true);
-                          const matchesDate = rekapMapelFilter.tanggal ? a.tanggal === rekapMapelFilter.tanggal : true;
-                          const matchesMapel = rekapMapelFilter.mapel ? a.mapel === rekapMapelFilter.mapel : true;
-                          return matchesNip && matchesDate && matchesMapel;
-                        })
-                        .map((a, i) => {
-                          const classAttendance = attendance.filter(sa => sa.kelas === a.kelas && sa.tanggal === a.tanggal);
-                          const h = classAttendance.filter(sa => sa.status === 'Hadir').length;
-                          const s = classAttendance.filter(sa => sa.status === 'Sakit').length;
-                          const iz = classAttendance.filter(sa => sa.status === 'Izin').length;
-                          const al = classAttendance.filter(sa => sa.status === 'Alfa').length;
-                          return (
-                            <tr key={a.id} className="hover:bg-gray-50">
-                              <td className="px-6 py-4 text-center text-gray-400 font-bold">{i + 1}</td>
-                              <td className="px-6 py-4 font-bold">{a.nama}</td>
-                              <td className="px-6 py-4 text-green-700 font-black text-xs uppercase">{a.mapel || '-'}</td>
-                              <td className="px-6 py-4 font-bold">{a.kelas}</td>
-                              <td className="px-6 py-4 text-center">
-                                <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded-full text-[10px] font-black">{h}</span>
-                              </td>
-                              <td className="px-6 py-4 text-center">
-                                <span className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full text-[10px] font-black">{s}</span>
-                              </td>
-                              <td className="px-6 py-4 text-center">
-                                <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full text-[10px] font-black">{iz}</span>
-                              </td>
-                              <td className="px-6 py-4 text-center">
-                                <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded-full text-[10px] font-black">{al}</span>
-                              </td>
-                              <td className="px-6 py-4 text-center font-black">{classAttendance.length}</td>
-                              <td className="px-6 py-4 italic text-gray-500 font-medium">Mengajar</td>
-                            </tr>
-                          );
-                        })}
-                     </tbody>
-                   </table>
-                 </div>
-               </div>
-            </motion.div>
-          )}
+              </motion.div>
+            );
+          })()}
 
           {activePanel === 'siswa-data' && (
             <motion.div key="siswa-data" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
@@ -5863,48 +6325,159 @@ export default function App() {
                       </div>
 
                       {/* Data Mata Pelajaran Madrasah */}
-                      <div className="bg-gray-50 p-6 rounded-[2rem] border border-gray-100">
-                        <div className="flex items-center justify-between mb-4">
-                          <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Data Mata Pelajaran Madrasah</label>
-                          <button 
-                            onClick={async () => {
-                              const currentSubs = appConfig.subjects || [];
-                              const allSelected = DEFAULT_SUBJECTS.every(s => currentSubs.includes(s));
-                              const newSubs = allSelected ? [] : [...DEFAULT_SUBJECTS];
-                              await setDoc(doc(db, 'appConfig', 'general'), { subjects: newSubs }, { merge: true });
-                            }}
-                            className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-wider hover:bg-green-200 transition-all"
-                          >
-                            {DEFAULT_SUBJECTS.every(s => (appConfig.subjects || []).includes(s)) ? 'Hapus Semua' : 'Ceklis Semua'}
-                          </button>
-                        </div>
-                        
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                          {DEFAULT_SUBJECTS.map(subject => {
-                            const isChecked = (appConfig.subjects || []).includes(subject);
-                            return (
-                              <label key={subject} className={`flex items-center gap-2 p-3 rounded-xl border transition-all cursor-pointer ${isChecked ? 'bg-green-50 border-green-200 text-green-700' : 'bg-white border-gray-100 text-gray-400 hover:border-gray-300'}`}>
-                                <input 
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  onChange={async (e) => {
-                                    const currentSubs = appConfig.subjects || [];
-                                    let newSubs;
-                                    if (e.target.checked) {
-                                      newSubs = [...currentSubs, subject];
-                                    } else {
-                                      newSubs = currentSubs.filter(s => s !== subject);
+                      <div className="bg-gray-50 p-6 rounded-[2rem] border border-gray-100 shadow-sm">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                          <div>
+                            <label className="block text-[11px] font-black text-gray-500 uppercase tracking-widest ml-1">
+                              Informasi Mata Pelajaran Madrasah
+                            </label>
+                            <p className="text-[11px] text-gray-400 mt-1 ml-1">
+                              Total mata pelajaran aktif: <span className="font-extrabold text-zinc-700">{activeSubjects.length}</span>
+                            </p>
+                          </div>
+                          
+                          <div className="flex items-center gap-2">
+                            <button 
+                              onClick={async () => {
+                                setConfirmModal({
+                                  show: true,
+                                  title: 'Reset Mapel?',
+                                  message: 'Apakah Anda yakin ingin menyetel ulang kustomisasi mata pelajaran ke daftar default madrasah?',
+                                  onConfirm: async () => {
+                                    toggleLoader(true);
+                                    try {
+                                      await setDoc(doc(db, 'appConfig', 'general'), { subjects: [...DEFAULT_SUBJECTS] }, { merge: true });
+                                    } catch (err) {
+                                      console.error(err);
+                                    } finally {
+                                      toggleLoader(false);
                                     }
-                                    await setDoc(doc(db, 'appConfig', 'general'), { subjects: newSubs }, { merge: true });
+                                  }
+                                });
+                              }}
+                              className="bg-zinc-100 text-zinc-600 hover:bg-zinc-200 px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all flex items-center gap-1 border border-zinc-200"
+                              title="Reset daftar mata pelajaran ke daftar standard madrasah"
+                            >
+                              <RefreshCcw size={10} /> Reset Default
+                            </button>
+                            
+                            <button 
+                              onClick={async () => {
+                                setConfirmModal({
+                                  show: true,
+                                  title: 'Hapus Semua?',
+                                  message: 'Apakah Anda yakin ingin menghapus semua mata pelajaran?',
+                                  onConfirm: async () => {
+                                    toggleLoader(true);
+                                    try {
+                                      await setDoc(doc(db, 'appConfig', 'general'), { subjects: [] }, { merge: true });
+                                    } catch (err) {
+                                      console.error(err);
+                                    } finally {
+                                      toggleLoader(false);
+                                    }
+                                  }
+                                });
+                              }}
+                              className="bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all border border-red-100"
+                            >
+                              Hapus Semua
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Input Form Tambah Mapel */}
+                        <form 
+                          onSubmit={async (e) => {
+                            e.preventDefault();
+                            const trimmed = newSubject.trim();
+                            if (!trimmed) return;
+                            
+                            if (activeSubjects.some(s => s.toLowerCase() === trimmed.toLowerCase())) {
+                              alert(`Mata pelajaran "${trimmed}" sudah terdaftar!`);
+                              return;
+                            }
+                            
+                            toggleLoader(true);
+                            try {
+                              const updated = [...activeSubjects, trimmed];
+                              await setDoc(doc(db, 'appConfig', 'general'), { subjects: updated }, { merge: true });
+                              setNewSubject('');
+                            } catch (err) {
+                              console.error(err);
+                              alert("Gagal menambahkan mata pelajaran.");
+                            } finally {
+                              toggleLoader(false);
+                            }
+                          }}
+                          className="flex gap-2 mb-6 bg-white p-2 rounded-2xl border border-gray-150 shadow-inner"
+                        >
+                          <div className="relative flex-1 flex items-center pl-3">
+                            <BookOpen size={16} className="text-gray-400 mr-2" />
+                            <input 
+                              type="text" 
+                              value={newSubject}
+                              onChange={e => setNewSubject(e.target.value)}
+                              placeholder="Masukkan nama mata pelajaran baru..."
+                              className="w-full border-0 p-1 text-sm font-bold text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-0"
+                            />
+                          </div>
+                          <button 
+                            type="submit"
+                            className="bg-green-600 hover:bg-green-700 text-white rounded-xl px-4 py-2 text-xs font-black uppercase tracking-widest transition-all flex items-center gap-1 shrink-0"
+                          >
+                            <Plus size={14} strokeWidth={3} /> Tambah
+                          </button>
+                        </form>
+                        
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
+                          {activeSubjects.map(subject => {
+                            return (
+                              <div 
+                                key={subject} 
+                                className="group flex items-center justify-between p-3.5 rounded-xl border border-gray-150 bg-white hover:border-green-200 hover:bg-green-50/20 transition-all shadow-sm animate-fade-in"
+                              >
+                                <div className="flex items-center gap-2 overflow-hidden">
+                                  <div className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+                                  <span className="text-xs font-extrabold text-zinc-700 truncate">{subject}</span>
+                                </div>
+                                <button 
+                                  onClick={async () => {
+                                    setConfirmModal({
+                                      show: true,
+                                      title: 'Hapus Mapel?',
+                                      message: `Apakah Anda yakin ingin menghapus mata pelajaran "${subject}"? Perubahan ini akan segera disinkronisasikan ke seluruh jadwal mengajar.`,
+                                      onConfirm: async () => {
+                                        toggleLoader(true);
+                                        try {
+                                          const updated = activeSubjects.filter(s => s !== subject);
+                                          await setDoc(doc(db, 'appConfig', 'general'), { subjects: updated }, { merge: true });
+                                        } catch (err) {
+                                          console.error(err);
+                                        } finally {
+                                          toggleLoader(false);
+                                        }
+                                      }
+                                    });
                                   }}
-                                  className="w-4 h-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
-                                />
-                                <span className="text-[11px] font-bold truncate">{subject}</span>
-                              </label>
+                                  className="text-gray-300 hover:text-red-600 p-1 rounded-lg hover:bg-red-50 transition-all shrink-0"
+                                  title={`Hapus ${subject}`}
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </div>
                             );
                           })}
+
+                          {activeSubjects.length === 0 && (
+                            <div className="col-span-full py-10 text-center bg-white border border-dashed border-gray-200 rounded-2xl">
+                              <AlertCircle className="mx-auto text-gray-300 mb-2" size={24} />
+                              <p className="text-xs font-extrabold text-gray-400 uppercase tracking-wider">Belum Ada Mata Pelajaran</p>
+                              <p className="text-[10px] text-gray-400 mt-1">Silakan ketik nama mapel di atas atau klik 'Reset Default' untuk memulihkan daftar bawaan.</p>
+                            </div>
+                          )}
                         </div>
-                        <p className="mt-4 text-[9px] text-gray-400 italic">Mata pelajaran yang diceklis akan muncul pada menu jam mengajar.</p>
+                        <p className="mt-4 text-[9px] text-gray-400 italic">Mata pelajaran yang terdaftar di atas akan otomatis disinkronkan ke dropdown jadwal mengajar madrasah.</p>
                       </div>
                     </div>
 
@@ -6427,6 +7000,8 @@ export default function App() {
           )}
         </AnimatePresence>
         <ConfirmModal />
+        <ResetAbsensiModal />
+        <StudentAttendanceDetailModal />
       </main>
     </div>
   );

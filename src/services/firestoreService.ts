@@ -178,9 +178,18 @@ export const firestoreService = {
     }
   },
 
-  resetAbsensiSiswa: async () => {
+  resetAbsensiSiswa: async (bulan?: string) => {
     try {
-      const q = query(collection(db, 'attendance'));
+      let q;
+      if (bulan) {
+        q = query(
+          collection(db, 'attendance'),
+          where('tanggal', '>=', bulan),
+          where('tanggal', '<=', bulan + '\uf8ff')
+        );
+      } else {
+        q = query(collection(db, 'attendance'));
+      }
       const snapshot = await getDocs(q);
       const promises = snapshot.docs.map(d => deleteDoc(doc(db, 'attendance', d.id)));
       await Promise.all(promises);
@@ -190,9 +199,18 @@ export const firestoreService = {
     }
   },
 
-  resetAbsensiGuru: async () => {
+  resetAbsensiGuru: async (bulan?: string) => {
     try {
-      const q = query(collection(db, 'teacherAttendance'));
+      let q;
+      if (bulan) {
+        q = query(
+          collection(db, 'teacherAttendance'),
+          where('tanggal', '>=', bulan),
+          where('tanggal', '<=', bulan + '\uf8ff')
+        );
+      } else {
+        q = query(collection(db, 'teacherAttendance'));
+      }
       const snapshot = await getDocs(q);
       const promises = snapshot.docs.map(d => deleteDoc(doc(db, 'teacherAttendance', d.id)));
       await Promise.all(promises);
