@@ -828,14 +828,24 @@ export default function App() {
 
 
 
-  const renderRoster = () => {
-    // Generate URL using session data. session.uid is guaranteed after login.
-    // We add a timestamp to prevent caching and ensure a fresh trigger.
-    const currentUserToken = session?.uid || 'guest';
-    const currentUserName = session?.name || 'User';
-    const currentUserRole = session?.role || 'Guru';
-    const rosterUrl = `https://criet-roster.vercel.app/?token=${currentUserToken}&role=${currentUserRole}&name=${encodeURIComponent(currentUserName)}&ts=${Date.now()}`;
+  const handleOpenRoster = async () => {
+    toggleLoader(true);
+    try {
+      const token = await firestoreService.generateOneTimeToken(session);
+      const url = `https://criet-roster.vercel.app/?token=${token}&role=${session?.role || 'Guru'}&name=${encodeURIComponent(session?.name || 'User')}&ott=${token}&ts=${Date.now()}`;
+      const newWindow = window.open(url, '_blank', 'noopener,noreferrer');
+      if (!newWindow) {
+        alert("Pop-up diblokir! Silakan izinkan pop-up di browser Anda agar dapat membuka aplikasi Roster.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Gagal membuat token login sekali pakai.");
+    } finally {
+      toggleLoader(false);
+    }
+  };
 
+  const renderRoster = () => {
     return (
       <div className="flex flex-col items-center justify-center min-h-[500px] bg-white rounded-[3rem] p-12 shadow-2xl border border-gray-100 text-center relative overflow-hidden">
         {/* Background Decorative Elements */}
@@ -862,32 +872,47 @@ export default function App() {
           </p>
 
           <div className="space-y-4">
-            <motion.a 
+            <motion.button 
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              href={rosterUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full bg-zinc-900 text-white rounded-[2rem] py-6 px-8 font-black uppercase tracking-widest shadow-xl hover:bg-zinc-800 transition-all flex items-center justify-center gap-4 group cursor-pointer no-underline"
+              onClick={handleOpenRoster}
+              className="w-full bg-zinc-900 text-white rounded-[2rem] py-6 px-8 font-black uppercase tracking-widest shadow-xl hover:bg-zinc-800 transition-all flex items-center justify-center gap-4 group cursor-pointer border-0"
             >
               <ExternalLink size={24} className="text-green-400 group-hover:rotate-12 transition-transform" />
               Buka Dashboard Roster
-            </motion.a>
+            </motion.button>
 
             <div className="flex items-center justify-center gap-2 py-3 px-6 bg-zinc-50 rounded-2xl border border-zinc-100">
               <ShieldCheck size={16} className="text-green-600" />
               <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">
-                Akses Terproteksi (Sesi Terintegrasi)
+                Akses Terproteksi (Sesi Sekali Pakai)
               </span>
             </div>
           </div>
 
           <p className="mt-8 text-[11px] font-bold text-zinc-400 italic">
-            *Anda akan diarahkan ke tab baru secara aman. Gunakan akun SIGAP Anda untuk sinkronisasi data.
+            *Anda akan diarahkan ke tab baru secara aman dengan Token Sekali Pakai. Link ini tidak dapat disalin atau dibuka ulang di perangkat lain.
           </p>
         </div>
       </div>
     );
+  };
+
+  const handleOpenKBC = async () => {
+    toggleLoader(true);
+    try {
+      const token = await firestoreService.generateOneTimeToken(session);
+      const url = `https://kbc-mtsn2bombana.vercel.app/?token=${token}&role=${session?.role || 'Guru'}&name=${encodeURIComponent(session?.name || 'User')}&ott=${token}&ts=${Date.now()}`;
+      const newWindow = window.open(url, '_blank', 'noopener,noreferrer');
+      if (!newWindow) {
+        alert("Pop-up diblokir! Silakan izinkan pop-up di browser Anda agar dapat membuka aplikasi KBC.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Gagal membuat token login sekali pakai.");
+    } finally {
+      toggleLoader(false);
+    }
   };
 
   const renderKBC = () => {
@@ -948,28 +973,26 @@ export default function App() {
           </p>
 
           <div className="space-y-4">
-            <motion.a 
+            <motion.button 
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              href="https://kbc-mtsn2bombana.vercel.app/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full bg-zinc-900 text-white rounded-[2rem] py-6 px-8 font-black uppercase tracking-widest shadow-xl hover:bg-zinc-800 transition-all flex items-center justify-center gap-4 group cursor-pointer no-underline"
+              onClick={handleOpenKBC}
+              className="w-full bg-zinc-900 text-white rounded-[2rem] py-6 px-8 font-black uppercase tracking-widest shadow-xl hover:bg-zinc-800 transition-all flex items-center justify-center gap-4 group cursor-pointer border-0"
             >
               <ExternalLink size={24} className="text-rose-400 group-hover:rotate-12 transition-transform" />
               Buka Aplikasi KBC
-            </motion.a>
+            </motion.button>
 
             <div className="flex items-center justify-center gap-2 py-3 px-6 bg-zinc-50 rounded-2xl border border-zinc-100">
               <ShieldCheck size={16} className="text-green-600" />
               <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">
-                Akses Terproteksi (Sesi Aktif)
+                Akses Terproteksi (Sesi Sekali Pakai)
               </span>
             </div>
           </div>
 
           <p className="mt-8 text-[11px] font-bold text-zinc-400 italic">
-            *Anda akan diarahkan ke tab baru secara aman. Pastikan Anda tetap login di sistem SIGAP.
+            *Anda akan diarahkan ke tab baru secara aman dengan Token Sekali Pakai. Link ini tidak dapat disalin atau dibuka ulang di perangkat lain.
           </p>
         </div>
       </div>
@@ -1415,6 +1438,7 @@ export default function App() {
   const [scanType, setScanType] = useState<'Siswa' | 'Kelas'>('Siswa');
   const [scanResult, setScanResult] = useState<{ success: boolean, message: string } | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [classScanFailCount, setClassScanFailCount] = useState(0);
 
   useEffect(() => {
     let html5QrCode: any = null;
@@ -1459,11 +1483,21 @@ export default function App() {
                   const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3');
                   audio.play().catch(e => console.log('Audio play blocked'));
                   if (navigator.vibrate) navigator.vibrate(200);
+                  if (scanType === 'Kelas') {
+                    setClassScanFailCount(0);
+                  }
+                } else {
+                  if (scanType === 'Kelas') {
+                    setClassScanFailCount(prev => prev + 1);
+                  }
                 }
                 
                 setScanResult({ success: res.success, message: res.message, status: res.status });
               } catch (e) {
                 setScanResult({ success: false, message: "Gagal memproses pindaian." });
+                if (scanType === 'Kelas') {
+                  setClassScanFailCount(prev => prev + 1);
+                }
               } finally {
                 toggleLoader(false);
               }
@@ -4316,13 +4350,13 @@ export default function App() {
               <div className="bg-white p-6 rounded-3xl shadow-xl w-full max-w-lg">
                 <div className="flex gap-2 p-1 bg-gray-100 rounded-xl mb-4">
                   <button 
-                    onClick={() => { setScanType('Siswa'); setScanResult(null); setScanning(false); }}
+                    onClick={() => { setScanType('Siswa'); setScanResult(null); setScanning(false); setClassScanFailCount(0); }}
                     className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${scanType === 'Siswa' ? 'bg-green-800 text-white shadow' : 'text-gray-500'}`}
                   >
                     Scan Siswa
                   </button>
                   <button 
-                    onClick={() => { setScanType('Kelas'); setScanResult(null); setScanning(false); }}
+                    onClick={() => { setScanType('Kelas'); setScanResult(null); setScanning(false); setClassScanFailCount(0); }}
                     className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${scanType === 'Kelas' ? 'bg-blue-800 text-white shadow' : 'text-gray-500'}`}
                   >
                     Scan Kelas
@@ -4349,29 +4383,52 @@ export default function App() {
                   )}
                 </div>
 
-                <div className="mb-4">
-                  <div className="flex items-center justify-between mb-1 ml-1">
-                    <label className="block text-[10px] font-black text-gray-400 uppercase">Input Manual</label>
-                    {scanning && (
-                      <button onClick={() => setScanning(false)} className="text-[10px] font-black text-red-500 uppercase">Matikan Kamera</button>
-                    )}
+                {(scanType !== 'Kelas' || classScanFailCount >= 2) ? (
+                  <div className="mb-4">
+                    <div className="flex items-center justify-between mb-1 ml-1">
+                      <div className="flex items-center gap-1.5">
+                        <label className="block text-[10px] font-black text-gray-400 uppercase">Input Manual</label>
+                        {scanType === 'Kelas' && (
+                          <span className="bg-amber-100 text-amber-800 font-extrabold text-[9px] px-2 py-0.5 rounded-full uppercase tracking-wider">Terbuka (Scan Gagal {classScanFailCount}x)</span>
+                        )}
+                      </div>
+                      {scanning && (
+                        <button onClick={() => setScanning(false)} className="text-[10px] font-black text-red-500 uppercase">Matikan Kamera</button>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        value={scanInput}
+                        onChange={e => setScanInput(e.target.value)}
+                        placeholder={scanType === 'Siswa' ? 'Contoh NISN: 12345' : 'Masukkan Nama Kelas'}
+                        className="flex-grow bg-gray-100 border-0 rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-green-600 transition-all"
+                      />
+                      <button 
+                        onClick={handleManualScan}
+                        className="bg-green-800 text-white px-6 py-3 rounded-xl font-bold text-xs hover:bg-green-700 transition-all"
+                      >
+                        Kirim
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex gap-2">
-                    <input 
-                      type="text" 
-                      value={scanInput}
-                      onChange={e => setScanInput(e.target.value)}
-                      placeholder={scanType === 'Siswa' ? 'Contoh NISN: 12345' : 'Masukkan Nama Kelas'}
-                      className="flex-grow bg-gray-100 border-0 rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-green-600 transition-all"
-                    />
-                    <button 
-                      onClick={handleManualScan}
-                      className="bg-green-800 text-white px-6 py-3 rounded-xl font-bold text-xs hover:bg-green-700 transition-all"
-                    >
-                      Kirim
-                    </button>
+                ) : (
+                  <div className="mb-4 p-5 bg-zinc-50 border border-dashed border-zinc-200 rounded-2xl text-center relative overflow-hidden">
+                    <div className="absolute top-2 right-2">
+                      {scanning && (
+                        <button onClick={() => setScanning(false)} className="text-[9px] font-black text-red-500 hover:text-red-700 uppercase tracking-wider bg-white px-2 py-1 rounded-md border border-zinc-150">Matikan Kamera</button>
+                      )}
+                    </div>
+                    <span className="text-[10px] uppercase font-black text-zinc-400 tracking-widest block mb-1">Input Manual Kelas Terkunci</span>
+                    <p className="text-[11px] text-zinc-500 font-medium">Harap lakukan scan QR Code Kelas terlebih dahulu menggunakan kamera.</p>
+                    <p className="text-[9px] text-zinc-400 mt-1.5 font-bold">
+                      Scan gagal kamera saat ini: <span className="text-zinc-600 font-black">{classScanFailCount}/2</span>
+                    </p>
+                    <p className="text-[9px] text-zinc-350 mt-1 italic leading-relaxed">
+                      *Input manual otomatis terbuka jika scan kamera gagal sebanyak 2 kali untuk membuktikan guru berada di dalam kelas.
+                    </p>
                   </div>
-                </div>
+                )}
 
                 {scanResult && (
                   <motion.div 

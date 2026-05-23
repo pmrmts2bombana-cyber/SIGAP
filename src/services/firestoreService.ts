@@ -526,5 +526,36 @@ export const firestoreService = {
     }
   },
 
+  generateOneTimeToken: async (session: any): Promise<string> => {
+    try {
+      if (!session || !session.uid) {
+        throw new Error("No active session found.");
+      }
+      // Generate a secure, hard-to-guess 32-character token string
+      const array = new Uint32Array(8);
+      window.crypto.getRandomValues(array);
+      const token = Array.from(array, dec => dec.toString(16).padStart(8, '0')).join('');
+
+      const tokenRef = doc(db, 'oneTimeTokens', token);
+      const now = Date.now();
+      const expiresAt = now + 60 * 1000; // Token valid for 60 seconds (1 minute)
+
+      await setDoc(tokenRef, {
+        token,
+        uid: session.uid,
+        name: session.name || '',
+        role: session.role || 'Guru',
+        createdAt: now,
+        expiresAt,
+        used: false
+      });
+
+      return token;
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, 'oneTimeTokens');
+      throw e;
+    }
+  },
+
 
 };

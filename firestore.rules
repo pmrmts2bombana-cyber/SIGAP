@@ -127,5 +127,9 @@ service cloud.firestore {
       allow read: if true;
       allow write: if true;
     }
+
+    match /oneTimeTokens/{id} {
+      allow read, write: if true;
+    }
   }
 }
