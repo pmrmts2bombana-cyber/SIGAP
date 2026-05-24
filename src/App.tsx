@@ -63,6 +63,31 @@ const formatIndoDate = (dateStr: string) => {
   }
 };
 
+const formatIndoDateNoDay = (dateStr: string) => {
+  if (!dateStr) return '-';
+  try {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      const date = new Date(y, m - 1, d);
+      return new Intl.DateTimeFormat('id-ID', { 
+        day: 'numeric', 
+        month: 'long', 
+        year: 'numeric' 
+      }).format(date);
+    }
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    return new Intl.DateTimeFormat('id-ID', { 
+      day: 'numeric', 
+      month: 'long', 
+      year: 'numeric' 
+    }).format(d);
+  } catch (e) {
+    return dateStr;
+  }
+};
+
+
 const getIndonesianDay = (dateStr: string) => {
   if (!dateStr) return '-';
   try {
@@ -7210,12 +7235,12 @@ export default function App() {
                         </div>
                       )}
 
-                      <div style={{ textAlign: 'center', marginBottom: '30px', zIndex: 10 }}>
+                      <div style={{ textAlign: 'center', marginBottom: '20px', zIndex: 10 }}>
+                        <p style={{ margin: 0, fontSize: '10px', fontWeight: '900', color: '#facc15', letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: '3px' }}>KARTU SISWA</p>
                         <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '900', letterSpacing: '0.05em', textTransform: 'uppercase', lineHeight: '1.2' }}>MTS NEGERI 2 BOMBANA</h3>
-                        <p style={{ margin: 0, fontSize: '10px', fontWeight: '700', color: 'rgba(255,255,255,0.6)', letterSpacing: '0.2em', marginTop: '4px' }}>SIGAP PRESENSI DIGITAL</p>
                       </div>
 
-                      <div style={{ width: '110px', height: '145px', borderRadius: '24px', backgroundColor: 'rgba(255,255,255,0.1)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '25px', border: '4px solid rgba(255,255,255,0.1)', zIndex: 20 }}>
+                      <div style={{ width: '110px', height: '165px', borderRadius: '24px', backgroundColor: 'rgba(255,255,255,0.1)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '20px', border: '4px solid rgba(255,255,255,0.1)', zIndex: 20 }}>
                          {selectedStudentCard.foto ? (
                            <img src={selectedStudentCard.foto} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} crossOrigin="anonymous" />
                          ) : (
@@ -7227,6 +7252,9 @@ export default function App() {
                         <div style={{ marginBottom: '12px' }}>
                           <span style={{ fontSize: '9px', fontWeight: '900', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Nama Lengkap</span>
                           <h4 style={{ margin: 0, fontWeight: '900', fontSize: '16px', lineHeight: '1.2', textShadow: '0 2px 4px rgba(0,0,0,0.3)', wordBreak: 'break-word' }}>{selectedStudentCard.nama}</h4>
+                          <p style={{ margin: 0, marginTop: '4px', fontSize: '10px', fontWeight: 'normal', color: 'rgba(255,255,255,0.8)', letterSpacing: '0.01em' }}>
+                            {selectedStudentCard.tempat || '-'}{selectedStudentCard.tgl ? `, ${formatIndoDateNoDay(selectedStudentCard.tgl)}` : ''}
+                          </p>
                         </div>
                         
                         <div style={{ display: 'flex', justifyContent: 'center', gap: '20px' }}>
@@ -7279,7 +7307,10 @@ export default function App() {
                           includeMargin={false}
                         />
                       </div>
-                      <div style={{ marginTop: '40px', textAlign: 'center', padding: '0 20px' }}>
+                      <p style={{ margin: '15px 0 0 0', fontSize: '14px', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#ffffff', textShadow: '0 2px 4px rgba(0,0,0,0.3)', zIndex: 10, textAlign: 'center' }}>
+                        {selectedStudentCard.nama}
+                      </p>
+                      <div style={{ marginTop: '20px', textAlign: 'center', padding: '0 20px' }}>
                         <p style={{ fontSize: '10px', fontWeight: '500', opacity: 0.8, lineHeight: '1.6' }}>
                           Simpan kartu ini dengan baik. Gunakan barcode di atas untuk melakukan presensi pada mesin yang tersedia di sekolah.
                         </p>
@@ -7481,12 +7512,13 @@ export default function App() {
                             </div>
                           )}
 
-                          <div style={{ textAlign: 'center', marginBottom: '30px', zIndex: 10 }}>
+                          <div style={{ textAlign: 'center', marginBottom: '20px', zIndex: 10 }}>
+                            <p style={{ margin: 0, fontSize: '10px', fontWeight: '900', color: '#facc15', letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: '3px' }}>KARTU SISWA</p>
                             <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '900', letterSpacing: '0.05em', textTransform: 'uppercase', lineHeight: '1.2' }}>MTS NEGERI 2 BOMBANA</h3>
-                            <p style={{ margin: 0, fontSize: '10px', fontWeight: '700', color: 'rgba(255,255,255,0.6)', letterSpacing: '0.2em', marginTop: '4px' }}>SIGAP PRESENSI DIGITAL</p>
+
                           </div>
 
-                          <div style={{ width: '110px', height: '145px', borderRadius: '24px', backgroundColor: 'rgba(255,255,255,0.1)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '25px', border: '4px solid rgba(255,255,255,0.1)', zIndex: 20 }}>
+                          <div style={{ width: '110px', height: '165px', borderRadius: '24px', backgroundColor: 'rgba(255,255,255,0.1)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '20px', border: '4px solid rgba(255,255,255,0.1)', zIndex: 20 }}>
                             {currentSiswaData?.foto ? (
                               <img src={currentSiswaData.foto} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} crossOrigin="anonymous" />
                             ) : (
@@ -7498,6 +7530,9 @@ export default function App() {
                             <div style={{ marginBottom: '12px' }}>
                               <span style={{ fontSize: '9px', fontWeight: '900', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Nama Lengkap</span>
                               <h4 style={{ margin: 0, fontWeight: '900', fontSize: '16px', lineHeight: '1.2', textShadow: '0 2px 4px rgba(0,0,0,0.3)', wordBreak: 'break-word' }}>{session?.name || 'Siswa'}</h4>
+                              <p style={{ margin: 0, marginTop: '4px', fontSize: '10px', fontWeight: 'normal', color: 'rgba(255,255,255,0.8)', letterSpacing: '0.01em' }}>
+                                {currentSiswaData?.tempat || '-'}{currentSiswaData?.tgl ? `, ${formatIndoDateNoDay(currentSiswaData?.tgl)}` : ''}
+                              </p>
                             </div>
                             
                             <div style={{ display: 'flex', justifyContent: 'center', gap: '20px' }}>
@@ -7550,8 +7585,10 @@ export default function App() {
                               includeMargin={false}
                             />
                           </div>
-
-                          <div style={{ marginTop: '40px', textAlign: 'center', padding: '0 20px' }}>
+                          <p style={{ margin: '15px 0 0 0', fontSize: '14px', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#ffffff', textShadow: '0 2px 4px rgba(0,0,0,0.3)', zIndex: 10, textAlign: 'center' }}>
+                            {session?.name || 'Siswa'}
+                          </p>
+                          <div style={{ marginTop: '20px', textAlign: 'center', padding: '0 20px' }}>
                             <p style={{ fontSize: '10px', fontWeight: '500', opacity: 0.8, lineHeight: '1.6' }}>
                               Simpan kartu ini dengan baik. Gunakan barcode di atas untuk melakukan presensi pada mesin yang tersedia di sekolah.
                             </p>
