@@ -104,6 +104,7 @@ export interface DaySetting {
   activeJps?: number[];
   reasonInactive?: string;
   targetDate?: string;
+  jpTimes?: { [jp: number]: { start: string; end: string } };
 }
 
 export interface AppConfig {

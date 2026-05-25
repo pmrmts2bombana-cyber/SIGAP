@@ -159,6 +159,10 @@
     "holidays": {
       "schema": "Holiday",
       "description": "Annual holidays"
+    },
+    "rekapSiswa": {
+      "schema": "object",
+      "description": "Daily real-time aggregates for school attendance stats"
     }
   }
 }

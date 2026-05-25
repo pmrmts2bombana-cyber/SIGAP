@@ -8,14 +8,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
   User, School, QrCode, UserPlus, GraduationCap, LayoutGrid, Settings, LogOut, 
   ChevronRight, ChevronLeft, ClipboardList, FileBarChart, Table as TableIcon, Search, Plus, 
   RefreshCcw, Printer, Download, Eye, EyeOff, Calendar, Clock, Trash2, Edit, Save,
   ArrowLeft, Upload, FileSpreadsheet, BarChart3, Info, CheckCircle2, XCircle, AlertTriangle, AlertCircle,
   Maximize2, CreditCard, Award, ExternalLink, ShieldCheck, Sparkles, Heart, ArrowUpCircle,
-  BookOpen, X, FileText
+  BookOpen, X, FileText, CalendarRange, Bell, BellRing
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { firestoreService } from './services/firestoreService';
@@ -33,7 +33,7 @@ import {
   Holiday, DaySetting, TeacherAttendance, AppConfig, TeachingSchedule
 } from './types';
 import { auth, db } from './firebase';
-import { doc, getDoc, setDoc, onSnapshot, collection, query, orderBy, where, getDocs } from 'firebase/firestore';
+import { doc, getDoc, setDoc, onSnapshot, collection, query, orderBy, where, getDocs, getCountFromServer } from 'firebase/firestore';
 import { handleFirestoreError, OperationType, onQuotaExceeded } from './lib/firebaseUtils';
 
 const formatIndoDate = (dateStr: string) => {
@@ -255,6 +255,23 @@ export default function App() {
   const [settings, setSettings] = useState<DaySetting[]>([]);
   const [savedDaysStatus, setSavedDaysStatus] = useState<{[hari: string]: 'idle' | 'saving' | 'saved'}>({});
   const [localActiveJps, setLocalActiveJps] = useState<{[hari: string]: number[]}>({});
+  const [localJpTimes, setLocalJpTimes] = useState<{[hari: string]: {[jp: number]: {start: string, end: string}}}>({});
+  const [expandedJpDays, setExpandedJpDays] = useState<{[hari: string]: boolean}>({});
+  const [currentTime, setCurrentTime] = useState("");
+  const [expandedKamadTeacherDetails, setExpandedKamadTeacherDetails] = useState<{[nip: string]: boolean}>({});
+
+  useEffect(() => {
+    const updateTime = () => {
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, '0');
+      const mm = String(now.getMinutes()).padStart(2, '0');
+      setCurrentTime(`${hh}:${mm}`);
+    };
+    updateTime();
+    const timer = setInterval(updateTime, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   const [localReasonInactive, setLocalReasonInactive] = useState<{[hari: string]: string}>({});
   const [localMasuk, setLocalMasuk] = useState<{[hari: string]: string}>({});
   const [localPulang, setLocalPulang] = useState<{[hari: string]: string}>({});
@@ -269,6 +286,141 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [session, setSession] = useState<UserSession | null>(null);
   const [studentProfileClassFilter, setStudentProfileClassFilter] = useState('');
+
+  // Parent Notification Center States for Student Dashboard
+  const [parentNotifEnabled, setParentNotifEnabled] = useState(() => {
+    return localStorage.getItem('parent_notif_enabled') === 'true';
+  });
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission>(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      try {
+        return Notification.permission as NotificationPermission;
+      } catch (e) {
+        console.warn("Could not read Notification.permission:", e);
+        return 'default';
+      }
+    }
+    return 'default';
+  });
+  const [isInIframe, setIsInIframe] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setIsInIframe(window.self !== window.top);
+      
+      // Update permission status dynamically when tab gains focus
+      const updatePermission = () => {
+        if ('Notification' in window) {
+          try {
+            setNotifPermission(Notification.permission as NotificationPermission);
+          } catch (e) {
+            console.warn(e);
+          }
+        }
+      };
+      
+      window.addEventListener('focus', updatePermission);
+      return () => {
+        window.removeEventListener('focus', updatePermission);
+      };
+    }
+  }, []);
+
+  const isFirstLoadRef = useRef(true);
+  const previousAttendanceRef = useRef<Record<string, { status: string; jam: string; jamPulang?: string }>>({});
+
+  const triggerParentNotification = useCallback((title: string, body: string) => {
+    // 1. Browser Native push notification
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      try {
+        new Notification(title, {
+          body,
+          icon: appConfig.logoUrl || '/favicon.ico',
+        });
+      } catch (e) {
+        console.error("Failed to show native browser notification", e);
+      }
+    }
+
+    // 2. Beautiful app success toast as active indicator
+    triggerSuccess(title.toUpperCase(), body);
+  }, [appConfig.logoUrl]);
+
+  // Monitor student attendance records live for Parent Notifications
+  useEffect(() => {
+    // Only monitor if logged in as Siswa
+    if (session?.role !== 'Siswa') {
+      isFirstLoadRef.current = true;
+      return;
+    }
+
+    const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD local
+    const studentAttendance = attendance.filter(a => a.nisn === session.uid);
+
+    if (isFirstLoadRef.current) {
+      // Initialize map of current attendance records
+      const initialMap: Record<string, { status: string; jam: string; jamPulang?: string }> = {};
+      studentAttendance.forEach(a => {
+        initialMap[a.id] = {
+          status: a.status || '',
+          jam: a.jam || '',
+          jamPulang: a.jamPulang || ''
+        };
+      });
+      previousAttendanceRef.current = initialMap;
+      isFirstLoadRef.current = false;
+      return;
+    }
+
+    if (!parentNotifEnabled) return;
+
+    // Check for changes/additions in today's attendance records
+    studentAttendance.forEach(a => {
+      // Only trigger if date matches today local
+      if (a.tanggal !== todayStr) {
+        previousAttendanceRef.current[a.id] = {
+          status: a.status || '',
+          jam: a.jam || '',
+          jamPulang: a.jamPulang || ''
+        };
+        return;
+      }
+
+      const prev = previousAttendanceRef.current[a.id];
+
+      // New attendance record created for today
+      if (!prev) {
+        if (a.jam) {
+          triggerParentNotification(
+            "📍 Presensi Masuk Siswa",
+            `Anak Anda (${a.nama}) telah terdeteksi hadir di madrasah pada pukul ${a.jam}. Status: ${a.status || 'Hadir'}.`
+          );
+        }
+      } 
+      // Update on today's record (e.g. status status or check-in speed)
+      else {
+        if (a.jam && prev.jam !== a.jam) {
+          triggerParentNotification(
+            "📍 Update Kehadiran",
+            `Update: Anak Anda (${a.nama}) terpantau masuk pada pukul ${a.jam}. Status: ${a.status || 'Hadir'}.`
+          );
+        }
+        if (a.jamPulang && !prev.jamPulang) {
+          triggerParentNotification(
+            "🚪 Presensi Pulang Siswa",
+            `Anak Anda (${a.nama}) telah melakukan presensi PULANG dari madrasah pada pukul ${a.jamPulang}.`
+          );
+        }
+      }
+
+      // Sync ref values
+      previousAttendanceRef.current[a.id] = {
+        status: a.status || '',
+        jam: a.jam || '',
+        jamPulang: a.jamPulang || ''
+      };
+    });
+  }, [attendance, session, parentNotifEnabled, triggerParentNotification]);
 
   const [activePanel, setActivePanel] = useState('home');
 
@@ -332,6 +484,46 @@ export default function App() {
   const [quotaExceeded, setQuotaExceeded] = useState(false);
   const [dismissQuotaNotice, setDismissQuotaNotice] = useState(false);
 
+  const [globalSiswaCount, setGlobalSiswaCount] = useState<number>(0);
+  const [globalGuruCount, setGlobalGuruCount] = useState<number>(0);
+  const [globalSiswaL, setGlobalSiswaL] = useState<number>(0);
+  const [globalSiswaP, setGlobalSiswaP] = useState<number>(0);
+
+  // Fetch school-wide counts for fallbacks in user accounts (homeroom teachers / general teachers)
+  useEffect(() => {
+    if (!firebaseConnected || !session) {
+      setGlobalSiswaCount(0);
+      setGlobalGuruCount(0);
+      setGlobalSiswaL(0);
+      setGlobalSiswaP(0);
+      return;
+    }
+
+    const fetchGlobalCounts = async () => {
+      try {
+        const [siswaSnap, guruSnap, siswaLSnap] = await Promise.all([
+          getCountFromServer(query(collection(db, 'students'))),
+          getCountFromServer(query(collection(db, 'teachers'))),
+          getCountFromServer(query(collection(db, 'students'), where('jenisKelamin', 'in', ['L', 'Laki-Laki', 'Laki-laki', 'Laki-Laki '])))
+        ]);
+
+        const siswaCount = siswaSnap.data().count;
+        const guruCount = guruSnap.data().count;
+        const siswaL = siswaLSnap.data().count;
+        const siswaP = Math.max(0, siswaCount - siswaL);
+
+        setGlobalSiswaCount(siswaCount);
+        setGlobalGuruCount(guruCount);
+        setGlobalSiswaL(siswaL);
+        setGlobalSiswaP(siswaP);
+      } catch (err) {
+        console.error("Error fetching global school counts:", err);
+      }
+    };
+
+    fetchGlobalCounts();
+  }, [firebaseConnected, session]);
+
   const [filterClassAbsensi, setFilterClassAbsensi] = useState('');
   const [filterGuruAbsensiClass, setFilterGuruAbsensiClass] = useState('');
   const [filterTanggalAbsensi, setFilterTanggalAbsensi] = useState('');
@@ -352,6 +544,7 @@ export default function App() {
     rekapGuru: 0
   });
   const [pageSize, setPageSize] = useState(10);
+  const [rekapDailyList, setRekapDailyList] = useState<any[]>([]);
 
   const [currentDate, setCurrentDate] = useState(getLocalISO);
 
@@ -423,6 +616,7 @@ export default function App() {
       setSettings([]);
       setHolidays([]);
       setTeachingSchedules([]);
+      setRekapDailyList([]);
       return;
     }
 
@@ -449,8 +643,9 @@ export default function App() {
     let unsubSettings = () => {};
     let unsubHolidays = () => {};
     let unsubSchedules = () => {};
+    let unsubRekapSiswa = () => {};
 
-    // 1. Settings & Holidays are lightweight config models, fetch safely
+    // 1. Settings, Holidays & RekapSiswa are lightweight config models, fetch safely
     unsubSettings = onSnapshot(collection(db, 'settings'), (snap) => {
       setSettings(snap.docs.map(d => d.data() as DaySetting));
     }, (error) => handleFirestoreError(error, OperationType.GET, 'settings'));
@@ -459,6 +654,18 @@ export default function App() {
       const data = snap.docs.map(d => d.data() as Holiday);
       setHolidays(data.sort((a, b) => b.tanggal.localeCompare(a.tanggal)));
     }, (error) => handleFirestoreError(error, OperationType.GET, 'holidays'));
+
+    unsubRekapSiswa = onSnapshot(
+      query(
+        collection(db, 'rekapSiswa'),
+        where('tanggal', '>=', dateLimit),
+        orderBy('tanggal', 'desc')
+      ),
+      (snap) => {
+        setRekapDailyList(snap.docs.map(d => d.data()));
+      },
+      (error) => handleFirestoreError(error, OperationType.GET, 'rekapSiswa')
+    );
 
     // Real-time synchronization of teacher profile to react instantly to admin role/position/jabatan changes
     if (role === 'Guru') {
@@ -719,6 +926,7 @@ export default function App() {
       unsubSettings();
       unsubHolidays();
       unsubSchedules();
+      unsubRekapSiswa();
     };
   }, [firebaseConnected, session?.uid, session?.role, session?.kelas, session?.isWali, session?.jabatan]);
 
@@ -732,24 +940,38 @@ export default function App() {
     
     const isHoliday = holidays.some(h => h.tanggal === today) || dayName === 'Minggu';
 
-    const todayAttendance = attendance.filter(a => a.tanggal === today);
-    const hadir = todayAttendance.filter(a => a.status === 'Hadir').length;
-    const lambat = todayAttendance.filter(a => a.terlambat > 0).length;
-    const sakit = todayAttendance.filter(a => a.status === 'Sakit').length;
-    const izin = todayAttendance.filter(a => a.status === 'Izin').length;
-    
-    // ALFA Logic: 
-    // 1. Those recorded as 'Alfa' in DB (e.g. check-in after school hours)
-    const recordedAlfa = todayAttendance.filter(a => a.status === 'Alfa').length;
-    
-    // 2. Those who haven't checked in at all today
-    const attendedNisns = new Set(todayAttendance.map(a => a.nisn));
-    const notYetCheckedIn = students.length - attendedNisns.size;
+    const todayRekap = rekapDailyList.find(r => r.tanggal === today);
+    const latestRekap = rekapDailyList.length > 0 ? rekapDailyList[0] : null;
 
-    const alfaTotal = isHoliday ? 0 : (recordedAlfa + notYetCheckedIn);
+    let siswaCount = todayRekap?.siswaCount ?? latestRekap?.siswaCount ?? (globalSiswaCount > 0 ? globalSiswaCount : students.length);
+    let guruCount = todayRekap?.guruCount ?? latestRekap?.guruCount ?? (globalGuruCount > 0 ? globalGuruCount : teachers.length);
+    let hadir = todayRekap?.hadirCount ?? 0;
+    let lambat = todayRekap?.terlambatCount ?? 0;
+    let sakit = todayRekap?.sakitCount ?? 0;
+    let izin = todayRekap?.izinCount ?? 0;
+    let alfaTotal = todayRekap?.alfaCount ?? 0;
+    let siswaL = todayRekap?.siswaL ?? latestRekap?.siswaL ?? (globalSiswaL > 0 ? globalSiswaL : students.filter(s => s.jenisKelamin === 'L' || s.jenisKelamin === 'Laki-Laki').length);
+    let siswaP = todayRekap?.siswaP ?? latestRekap?.siswaP ?? (globalSiswaP > 0 ? globalSiswaP : students.filter(s => s.jenisKelamin === 'P' || s.jenisKelamin === 'Perempuan').length);
 
-    const siswaL = students.filter(s => s.jenisKelamin === 'L' || s.jenisKelamin === 'Laki-Laki').length;
-    const siswaP = students.filter(s => s.jenisKelamin === 'P' || s.jenisKelamin === 'Perempuan').length;
+    // Use live fallback ONLY for Admin and Leadership when rekap is completely unavailable and they actually have full lists loaded (> 50 students)
+    const isLeadershipOrAdmin = session?.role === 'Admin' || (session?.role === 'Guru' && (session?.jabatan === 'Kamad' || session?.jabatan === 'Wakamad'));
+    if (!todayRekap) {
+      if (isLeadershipOrAdmin && students.length > 50) {
+        const todayAttendance = attendance.filter(a => a.tanggal === today);
+        hadir = todayAttendance.filter(a => a.status === 'Hadir').length;
+        lambat = todayAttendance.filter(a => a.terlambat > 0).length;
+        sakit = todayAttendance.filter(a => a.status === 'Sakit').length;
+        izin = todayAttendance.filter(a => a.status === 'Izin').length;
+        const recordedAlfa = todayAttendance.filter(a => a.status === 'Alfa').length;
+        const attendedNisns = new Set(todayAttendance.map(a => a.nisn));
+        const notYetCheckedIn = students.length - attendedNisns.size;
+        alfaTotal = isHoliday ? 0 : (recordedAlfa + notYetCheckedIn);
+      } else {
+        // For general teachers / Wali Kelas, if today's summary is not in DB yet, attendance stats are 0,
+        // and Alfa defaults to the total school-wide student count (every student is technically not checked-in yet)
+        alfaTotal = isHoliday ? 0 : siswaCount;
+      }
+    }
 
     // Chart data (last 7 days)
     const chartData = [];
@@ -757,30 +979,36 @@ export default function App() {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const dateStr = d.toISOString().split('T')[0];
-      const dayData = attendance.filter(a => a.tanggal === dateStr);
-      const dayHadir = dayData.filter(a => a.status === 'Hadir').length;
-      
-      // Daily Alfa calculation for chart too?
-      // For chart, we use the same "Missing" logic for realistic data
-      const dDayMap = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
-      const dDayName = dDayMap[d.getDay()];
-      const dIsHoliday = holidays.some(h => h.tanggal === dateStr) || dDayName === 'Minggu';
-      
-      const dAttendedNisns = new Set(dayData.map(a => a.nisn));
-      const dNotYet = students.length - dAttendedNisns.size;
-      const dRecordedAlfa = dayData.filter(a => a.status === 'Alfa').length;
-      const dAlfaTotal = dIsHoliday ? 0 : (dNotYet + dRecordedAlfa);
+      const dayRekap = rekapDailyList.find(r => r.tanggal === dateStr);
 
-      chartData.push({
-        name: d.toLocaleDateString('id-ID', { weekday: 'short' }),
-        hadir: dayHadir,
-        alfa: dAlfaTotal
-      });
+      if (dayRekap) {
+        chartData.push({
+          name: d.toLocaleDateString('id-ID', { weekday: 'short' }),
+          hadir: dayRekap.hadirCount ?? 0,
+          alfa: dayRekap.alfaCount ?? 0
+        });
+      } else {
+        // Fallback to live attendance if available
+        const dayData = attendance.filter(a => a.tanggal === dateStr);
+        const dayHadir = dayData.filter(a => a.status === 'Hadir').length;
+        const dDayMap = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+        const dDayName = dDayMap[d.getDay()];
+        const dIsHoliday = holidays.some(h => h.tanggal === dateStr) || dDayName === 'Minggu';
+        const dNotYet = students.length > 0 ? (students.length - new Set(dayData.map(a => a.nisn)).size) : 0;
+        const dRecordedAlfa = dayData.filter(a => a.status === 'Alfa').length;
+        const dAlfaTotal = dIsHoliday ? 0 : (dNotYet + dRecordedAlfa);
+
+        chartData.push({
+          name: d.toLocaleDateString('id-ID', { weekday: 'short' }),
+          hadir: dayHadir,
+          alfa: dAlfaTotal
+        });
+      }
     }
 
     return {
-      siswaCount: students.length,
-      guruCount: teachers.length,
+      siswaCount,
+      guruCount,
       hadirHariIni: hadir,
       terlambatHariIni: lambat,
       sakitCount: sakit,
@@ -790,7 +1018,7 @@ export default function App() {
       siswaL,
       siswaP
     };
-  }, [students, teachers, attendance, settings, holidays]);
+  }, [students, teachers, attendance, settings, holidays, rekapDailyList, globalSiswaCount, globalGuruCount, globalSiswaL, globalSiswaP]);
 
   // Reporting states
   const [rekapFilter, setRekapFilter] = useState({ bulan: new Date().toISOString().slice(0, 7), kelas: '', type: 'Siswa' });
@@ -4321,6 +4549,596 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Today's Teacher Schedule OR Guru yang Mengajar Hari Ini for Kamad */}
+              {session?.role === 'Guru' && (
+                <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-gray-100 animate-fadeIn space-y-6">
+                  {session?.jabatan === 'Kamad' ? (
+                    // Kamad Special Dashboard View: Guru yang Mengajar Hari Ini
+                    <>
+                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-50 pb-5">
+                        <div>
+                          <span className="text-[9px] font-black text-green-700 uppercase tracking-widest bg-green-50 px-2.5 py-1 rounded-full border border-green-100">Live KBM Monitor</span>
+                          <h3 className="text-xl font-black text-zinc-900 mt-2">Guru yang Mengajar Hari Ini</h3>
+                          <p className="text-xs text-gray-400 font-bold mt-1">Gunakan panel monitoring ini untuk melihat guru yang mengajar serta status absensinya.</p>
+                        </div>
+                        <div className="flex items-center gap-3 bg-zinc-950 text-white px-5 py-3 rounded-2xl shadow-md shrink-0">
+                          <Clock size={16} className="text-green-400 animate-pulse" />
+                          <div className="flex flex-col text-left">
+                            <span className="text-[8px] font-black text-gray-400 uppercase tracking-widest">Waktu Presensi</span>
+                            <span className="text-sm font-black font-mono tracking-wider">{currentTime || "00:00"} WITA</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {(() => {
+                        const IndonesianDays = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+                        const todayDayName = IndonesianDays[new Date().getDay()];
+
+                        if (todayDayName === "Minggu") {
+                          return (
+                            <div className="py-8 text-center text-gray-400 italic font-medium">Hari Minggu tidak ada jadwal KBM. Selamat berlibur!</div>
+                          );
+                        }
+
+                        const todayDateStr = new Date().toLocaleDateString('en-CA');
+                        const todaySetting = settings.find(st => st.hari === todayDayName);
+
+                        // Filter only real teachers (not students, not Kamad themselves)
+                        const filteredTeachers = teachers.filter(t => t.role !== 'Siswa' && t.nip !== session?.uid);
+
+                        if (filteredTeachers.length === 0) {
+                          return (
+                            <div className="py-8 text-center text-gray-400 italic font-bold uppercase tracking-wider text-xs">Belum ada Guru yang terdaftar di sistem.</div>
+                          );
+                        }
+
+                        const teachersTeachingToday = filteredTeachers.filter(t => 
+                          teachingSchedules.some(s => s.nip === t.nip && s.hari === todayDayName)
+                        );
+                        const teachersNotTeachingToday = filteredTeachers.filter(t => 
+                          !teachingSchedules.some(s => s.nip === t.nip && s.hari === todayDayName)
+                        );
+
+                        return (
+                          <div className="space-y-6">
+                            {/* Summary Cards */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                              <div className="bg-emerald-50/50 border border-emerald-100 p-4 rounded-2xl flex items-center gap-4 shadow-xs">
+                                <div className="w-12 h-12 rounded-xl bg-emerald-500 flex items-center justify-center text-white shrink-0">
+                                  <BookOpen size={24} />
+                                </div>
+                                <div className="text-left">
+                                  <p className="text-[10px] font-black text-emerald-800 uppercase tracking-widest leading-none">Total Guru Mengajar Hari Ini</p>
+                                  <p className="text-2xl font-black text-emerald-950 mt-1">{teachersTeachingToday.length} <span className="text-xs font-bold text-emerald-600">Guru</span></p>
+                                </div>
+                              </div>
+
+                              <div className="bg-zinc-50 border border-zinc-200/80 p-4 rounded-2xl flex items-center gap-4 shadow-xs">
+                                <div className="w-12 h-12 rounded-xl bg-zinc-400 flex items-center justify-center text-white shrink-0">
+                                  <User size={24} />
+                                </div>
+                                <div className="text-left">
+                                  <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest leading-none">Guru Tidak Mengajar Hari Ini</p>
+                                  <p className="text-2xl font-black text-zinc-950 mt-1">{teachersNotTeachingToday.length} <span className="text-xs font-bold text-zinc-500">Guru</span></p>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Teachers Grid */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                              {filteredTeachers.map((teacher) => {
+                              // Check if teacher has teaching schedule for today
+                              const teacherSchedulesToday = teachingSchedules.filter(s => s.nip === teacher.nip && s.hari === todayDayName);
+                              const isTeachingToday = teacherSchedulesToday.length > 0;
+
+                              const limitJp = todayDayName === 'Jumat' ? 6 : 8;
+
+                              const getJpStartEnd = (jp: number, jpTimesFromDb: any, limit: number) => {
+                                if (jpTimesFromDb?.[jp]?.start && jpTimesFromDb?.[jp]?.end) {
+                                  return {
+                                    start: jpTimesFromDb[jp].start,
+                                    end: jpTimesFromDb[jp].end
+                                  };
+                                }
+                                // Fallback to standard calculated JP times:
+                                // Start KBM at 07:15. Each JP is 40 minutes.
+                                // After JP 4 (i.e., before JP 5 is started), there's a 20-min break.
+                                let startHour = 7;
+                                let startMin = 15;
+                                for (let i = 1; i < jp; i++) {
+                                  if (i === 4) {
+                                    startMin += 20; // 20 min break after JP 4
+                                  }
+                                  startMin += 40; // Add previous JP duration
+                                }
+                                // Normalize start
+                                startHour += Math.floor(startMin / 60);
+                                startMin = startMin % 60;
+                                
+                                let endHour = startHour;
+                                let endMin = startMin + 40;
+                                endHour += Math.floor(endMin / 60);
+                                endMin = endMin % 60;
+
+                                return {
+                                  start: `${String(startHour).padStart(2, '0')}:${String(startMin).padStart(2, '0')}`,
+                                  end: `${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`
+                                };
+                              };
+
+                              const parseTimeToMinutes = (tStr: string) => {
+                                if (!tStr) return 0;
+                                const parts = tStr.split(':');
+                                if (parts.length < 2) return 0;
+                                return parseInt(parts[0]) * 60 + parseInt(parts[1]);
+                              };
+
+                              const currentMin = parseTimeToMinutes(currentTime || "00:00");
+
+                              // Collect all classes & JP ranges where they teach today with exact active states
+                              const teachDetailList = teacherSchedulesToday.map(sched => {
+                                const schedJps = sched.jps || [];
+                                const minJp = schedJps.length > 0 ? Math.min(...schedJps) : 1;
+                                const maxJp = schedJps.length > 0 ? Math.max(...schedJps) : 1;
+
+                                const startJpTimes = getJpStartEnd(minJp, todaySetting?.jpTimes, limitJp);
+                                const endJpTimes = getJpStartEnd(maxJp, todaySetting?.jpTimes, limitJp);
+
+                                const startTimeStr = startJpTimes.start;
+                                const endTimeStr = endJpTimes.end;
+
+                                const startMin = parseTimeToMinutes(startTimeStr);
+                                const endMin = parseTimeToMinutes(endTimeStr);
+
+                                const attendanceRecord = teacherAttendance.find(ta =>
+                                  ta.nip === teacher.nip &&
+                                  ta.kelas === sched.kelas &&
+                                  ta.tanggal === todayDateStr
+                                );
+
+                                const scanned = !!attendanceRecord;
+                                const scanTime = attendanceRecord?.jam || "";
+
+                                // Check if this JP is inactive in today's settings
+                                const activeJpsList = todaySetting?.activeJps && Array.isArray(todaySetting.activeJps)
+                                  ? todaySetting.activeJps
+                                  : Array.from({ length: todayDayName === 'Jumat' ? 6 : 8 }, (_, i) => i + 1);
+                                
+                                const isJpInactive = schedJps.some(jp => !activeJpsList.includes(jp));
+
+                                let schedState: 'PASSED' | 'ACTIVE' | 'STANDBY' | 'INACTIVE' = 'STANDBY';
+                                if (isJpInactive) {
+                                  schedState = 'INACTIVE';
+                                } else if (currentMin < startMin) {
+                                  schedState = 'STANDBY';
+                                } else if (currentMin >= startMin && currentMin <= endMin) {
+                                  schedState = 'ACTIVE';
+                                } else {
+                                  schedState = 'PASSED';
+                                }
+
+                                return {
+                                  kelas: sched.kelas,
+                                  mapel: sched.mapel || "Mata Pelajaran",
+                                  jps: schedJps,
+                                  startTime: startTimeStr,
+                                  endTime: endTimeStr,
+                                  scanned,
+                                  scanTime,
+                                  state: schedState,
+                                  reasonInactive: todaySetting?.reasonInactive || ""
+                                };
+                              });
+
+                              // Identify combined teacher status
+                              let teacherStatus: 'HIJAU' | 'MERAH' | 'STANDBY' | 'ABU-ABU' = 'ABU-ABU';
+                              let statusLabel = "Tidak Mengajar";
+
+                              if (isTeachingToday) {
+                                const nonInactiveDetails = teachDetailList.filter(dt => dt.state !== 'INACTIVE');
+                                
+                                if (teachDetailList.length > 0 && nonInactiveDetails.length === 0) {
+                                  teacherStatus = 'ABU-ABU';
+                                  statusLabel = todaySetting?.reasonInactive ? `${todaySetting.reasonInactive}` : "Mengikuti Kegiatan";
+                                } else {
+                                  const quietActive = nonInactiveDetails.some(dt => dt.state === 'ACTIVE');
+                                  const quietStandby = nonInactiveDetails.some(dt => dt.state === 'STANDBY');
+                                  const quietAllPassed = nonInactiveDetails.length > 0 && nonInactiveDetails.every(dt => dt.state === 'PASSED');
+
+                                  if (quietAllPassed) {
+                                    teacherStatus = 'ABU-ABU';
+                                    statusLabel = "Selesai Mengajar";
+                                  } else if (quietActive) {
+                                    const activeClasses = nonInactiveDetails.filter(dt => dt.state === 'ACTIVE');
+                                    const anyUnscannedActive = activeClasses.some(dt => !dt.scanned);
+
+                                    if (anyUnscannedActive) {
+                                      teacherStatus = 'MERAH';
+                                      statusLabel = "Belum Scan";
+                                    } else {
+                                      teacherStatus = 'HIJAU';
+                                      statusLabel = "Aktif Mengajar";
+                                    }
+                                  } else if (quietStandby) {
+                                    teacherStatus = 'STANDBY';
+                                    statusLabel = "Standby";
+                                  } else {
+                                    teacherStatus = 'ABU-ABU';
+                                    statusLabel = "Tidak Mengajar";
+                                  }
+                                }
+                              }
+
+                              // Visual Styling Setup
+                              let cardClass = "";
+                              let circleClass = "";
+                              let nameColorClass = "";
+                              let roleColorClass = "";
+                              let avatarClass = "";
+                              let badgeClass = "";
+
+                              switch (teacherStatus) {
+                                case 'HIJAU':
+                                  cardClass = "bg-emerald-50/15 border-emerald-200 hover:bg-emerald-50/35 shadow-xs";
+                                  circleClass = "bg-green-500 border-green-600 shadow shadow-green-200";
+                                  nameColorClass = "text-emerald-950 font-black";
+                                  roleColorClass = "text-emerald-600/80 font-bold";
+                                  avatarClass = "bg-green-100 text-green-700 border-green-200 animate-pulse";
+                                  badgeClass = "bg-emerald-100 text-emerald-800 border-emerald-200 font-extrabold";
+                                  break;
+                                case 'MERAH':
+                                  cardClass = "bg-rose-50/30 border-rose-300 hover:bg-rose-50/50 shadow-md ring-2 ring-rose-100 animate-pulse";
+                                  circleClass = "bg-rose-500 border-rose-600 shadow shadow-rose-200";
+                                  nameColorClass = "text-rose-950 font-black";
+                                  roleColorClass = "text-rose-600/80 font-bold";
+                                  avatarClass = "bg-rose-100 text-rose-700 border-rose-200";
+                                  badgeClass = "bg-rose-100 text-rose-800 border-rose-200/90 font-extrabold";
+                                  break;
+                                case 'STANDBY':
+                                  cardClass = "bg-amber-50/10 border-amber-200 hover:bg-amber-50/20";
+                                  circleClass = "bg-amber-500 border-amber-600 shadow shadow-amber-200";
+                                  nameColorClass = "text-amber-950 font-medium";
+                                  roleColorClass = "text-amber-700 font-semibold";
+                                  avatarClass = "bg-amber-100 text-amber-700 border-amber-150";
+                                  badgeClass = "bg-amber-100 text-amber-800 border-amber-200 font-extrabold";
+                                  break;
+                                case 'ABU-ABU':
+                                default:
+                                  cardClass = "bg-zinc-50/40 border-zinc-150 opacity-60 hover:opacity-100 transition-opacity";
+                                  circleClass = "bg-zinc-300 border-zinc-400";
+                                  nameColorClass = "text-zinc-650 font-semibold";
+                                  roleColorClass = "text-zinc-400 font-medium";
+                                  avatarClass = "bg-zinc-100 text-zinc-500 border-zinc-200";
+                                  badgeClass = "bg-zinc-100 text-zinc-600 border-zinc-200 font-bold";
+                                  break;
+                              }
+
+                              return (
+                                <div
+                                  key={teacher.nip}
+                                  onClick={() => {
+                                    setExpandedKamadTeacherDetails(prev => ({
+                                      ...prev,
+                                      [teacher.nip]: !prev[teacher.nip]
+                                    }));
+                                  }}
+                                  className={`p-5 rounded-3xl border transition-all flex flex-col justify-between h-full relative overflow-hidden group cursor-pointer ${cardClass}`}
+                                >
+                                  <div>
+                                    <div className="flex justify-between items-start mb-4 gap-2">
+                                      <div className="flex gap-3 items-center text-left">
+                                        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-black text-xs shrink-0 border ${avatarClass}`}>
+                                          {teacher.nama ? teacher.nama.split(' ').map((n: string) => n[0]).slice(0, 2).join('').toUpperCase() : "??"}
+                                        </div>
+                                        <div className="flex flex-col">
+                                          <span className={`text-xs font-black break-words line-clamp-1 group-hover:text-green-950 transition-colors uppercase tracking-tight ${nameColorClass}`}>{teacher.nama}</span>
+                                          <span className={`text-[9px] uppercase tracking-widest ${roleColorClass}`}>{teacher.jabatan || "Guru Pengajar"}</span>
+                                        </div>
+                                      </div>
+                                      <div className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${circleClass}`}>
+                                        <span className="w-1.1 h-1.1 rounded-full bg-white animate-ping" style={{ display: (teacherStatus === 'HIJAU' || teacherStatus === 'MERAH') ? 'inline-block' : 'none' }}></span>
+                                      </div>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center gap-2 mb-2 text-left">
+                                      <span className={`text-[9px] px-2 py-0.5 rounded-full border uppercase tracking-widest ${badgeClass}`}>
+                                        {statusLabel}
+                                      </span>
+                                      {isTeachingToday && (
+                                        <span className="text-[9px] font-black text-zinc-500 bg-zinc-100/80 px-2 py-0.5 border border-zinc-200 rounded-full uppercase tracking-wider">
+                                          {teacherSchedulesToday.length} Kelas
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-2 pt-3 border-t border-gray-100/60 text-left">
+                                    <div className="flex justify-between items-center text-[10px] text-zinc-400 font-extrabold uppercase tracking-widest">
+                                      <span>Lihat Detail KBM</span>
+                                      <span>{expandedKamadTeacherDetails[teacher.nip] ? "▲" : "▼"}</span>
+                                    </div>
+                                    
+                                    {expandedKamadTeacherDetails[teacher.nip] && (
+                                      <div className="mt-3 space-y-2.5 bg-white p-3.5 rounded-2xl border border-gray-150 shadow-xs animate-slideIn">
+                                        {!isTeachingToday ? (
+                                          <p className="text-[10px] text-zinc-400 font-bold italic">Guru ini tidak memiliki jadwal mengajar pada hari {todayDayName}.</p>
+                                        ) : (
+                                          teachDetailList.map((dt, sIdx) => {
+                                            const isInactive = dt.state === 'INACTIVE';
+                                            return (
+                                              <div key={sIdx} className={`border-b border-zinc-50 last:border-b-0 pb-3 last:pb-0 ${isInactive ? 'opacity-70' : ''}`}>
+                                                <p className="text-[9px] font-black text-zinc-400 uppercase tracking-widest leading-none">
+                                                  {dt.mapel} {isInactive && <span className="text-orange-600 font-bold">(NONAKTIF / KEGIATAN)</span>}
+                                                </p>
+                                                
+                                                {isInactive ? (
+                                                  <p className="text-xs font-black text-zinc-500 mt-1">
+                                                    Mengikuti kegiatan <span className="text-orange-700 bg-orange-50 border border-orange-100 px-1.5 py-0.5 rounded-md font-extrabold">{dt.reasonInactive || "Materi Nonaktif"}</span> pada JP <span className="font-mono text-zinc-950 bg-zinc-100 px-1 py-0.5 rounded text-[10px]">{dt.jps.join(', ')}</span> ({dt.startTime} - {dt.endTime})
+                                                  </p>
+                                                ) : (
+                                                  <p className="text-xs font-black text-zinc-800 mt-1">
+                                                    Mengajar di Kelas <span className="text-green-700">{dt.kelas}</span>, JP <span className="font-mono text-zinc-950 bg-zinc-100 px-1 py-0.5 rounded text-[10px]">{dt.jps.join(', ')}</span> ({dt.startTime} - {dt.endTime})
+                                                  </p>
+                                                )}
+
+                                                <div className="mt-2 flex items-center gap-2 bg-zinc-50/50 p-2 rounded-xl border border-zinc-100">
+                                                  <div className={`w-2 h-2 rounded-full shrink-0 ${
+                                                    isInactive
+                                                      ? 'bg-zinc-400 border border-zinc-300'
+                                                      : dt.scanned 
+                                                      ? 'bg-green-500' 
+                                                      : dt.state === 'ACTIVE' 
+                                                      ? 'bg-rose-500 animate-pulse' 
+                                                      : dt.state === 'STANDBY' 
+                                                      ? 'bg-amber-400' 
+                                                      : 'bg-zinc-400'
+                                                  }`} />
+                                                  <p className="text-[10px] font-bold text-zinc-600">
+                                                    {isInactive ? (
+                                                      <span className="text-zinc-500 font-black">Mengikuti Kegiatan: {dt.reasonInactive || "Materi Nonaktif"}</span>
+                                                    ) : dt.scanned ? (
+                                                      <span className="text-green-600 font-black">Presensi Jam KBM Terdaftar ({dt.scanTime} WITA)</span>
+                                                    ) : dt.state === 'ACTIVE' ? (
+                                                      <span className="text-rose-600 font-black animate-pulse">Belum Melakukan Scan di Jam Pelajaran Ini</span>
+                                                    ) : dt.state === 'STANDBY' ? (
+                                                      <span className="text-amber-600 font-black">Belum Scan (Standby - Kelas Belum Dimulai)</span>
+                                                    ) : (
+                                                      <span className="text-zinc-500 font-black">Tidak Melakukan Scan (Melewati Batas JP)</span>
+                                                    )}
+                                                  </p>
+                                                </div>
+                                              </div>
+                                            );
+                                          })
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        );
+                      })()}
+                    </>
+                  ) : (
+                    // Regular Teacher Dashboard View: Agenda Mengajar Hari Ini
+                    <>
+                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-50 pb-5">
+                        <div>
+                          <span className="text-[9px] font-black text-green-700 uppercase tracking-widest bg-green-50 px-2.5 py-1 rounded-full border border-green-100">Jadwal Mengajar Real-time</span>
+                          <h3 className="text-xl font-black text-zinc-900 mt-2">Agenda Mengajar Hari Ini</h3>
+                          <p className="text-xs text-gray-400 font-bold mt-1">Sistem menyala otomatis sesuai dengan jam pelajaran yang ditetapkan oleh Admin.</p>
+                        </div>
+                        {/* Live Clock indicator representing why it is active real-time */}
+                        <div className="flex items-center gap-3 bg-zinc-950 text-white px-5 py-3 rounded-2xl shadow-md shrink-0">
+                          <Clock size={16} className="text-green-400 animate-pulse" />
+                          <div className="flex flex-col text-left">
+                            <span className="text-[8px] font-black text-gray-400 uppercase tracking-widest">Waktu Presensi</span>
+                            <span className="text-sm font-black font-mono tracking-wider">{currentTime || "00:00"} WITA</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {(() => {
+                        const IndonesianDays = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+                        const todayDayName = IndonesianDays[new Date().getDay()];
+
+                        if (todayDayName === "Minggu") {
+                          return (
+                            <div className="py-8 text-center text-gray-400 italic font-medium">Hari Minggu tidak ada jadwal KBM. Selamat berlibur!</div>
+                          );
+                        }
+
+                        // Get currently logged-in teacher's schedules for today
+                        const todayDateStr = new Date().toLocaleDateString('en-CA');
+                        const myTodaySchedules = teachingSchedules.filter(s => s.nip === session?.uid && s.hari === todayDayName);
+
+                        if (myTodaySchedules.length === 0) {
+                          return (
+                            <div className="py-8 text-center text-gray-400 italic font-bold uppercase tracking-wider text-xs">Anda tidak memiliki jadwal mengajar terdaftar pada hari {todayDayName}.</div>
+                          );
+                        }
+
+                        // Get today's daily setting
+                        const todaySetting = settings.find(st => st.hari === todayDayName);
+                        
+                        // Sort schedule sequentially based on minimum JP assigned
+                        const sortedSchedules = [...myTodaySchedules].sort((a, b) => {
+                          const minA = a.jps && a.jps.length > 0 ? Math.min(...a.jps) : 99;
+                          const minB = b.jps && b.jps.length > 0 ? Math.min(...b.jps) : 99;
+                          return minA - minB;
+                        });
+
+                        return (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {sortedSchedules.map((sched) => {
+                              const schedJps = sched.jps || [];
+                              const minJp = schedJps.length > 0 ? Math.min(...schedJps) : null;
+                              const maxJp = schedJps.length > 0 ? Math.max(...schedJps) : null;
+
+                              let startTime = "";
+                              let endTime = "";
+
+                              if (minJp && maxJp && todaySetting?.jpTimes) {
+                                startTime = todaySetting.jpTimes[minJp]?.start || "";
+                                endTime = todaySetting.jpTimes[maxJp]?.end || "";
+                              }
+
+                              // Check if teacher has already marked presence for this today
+                              const attendanceRecord = teacherAttendance.find(ta =>
+                                ta.nip === session?.uid &&
+                                ta.kelas === sched.kelas &&
+                                ta.tanggal === todayDateStr
+                              );
+
+                              const isAlreadyAttended = !!attendanceRecord;
+
+                              // Check if any of these JPs are inactive in today's settings
+                              const activeJpsList = todaySetting?.activeJps && Array.isArray(todaySetting.activeJps)
+                                ? todaySetting.activeJps
+                                : Array.from({ length: todayDayName === 'Jumat' ? 6 : 8 }, (_, i) => i + 1);
+                              const isJpInactive = schedJps.some(jp => !activeJpsList.includes(jp));
+
+                              // Evaluate dynamic button availability
+                              let buttonStatus: 'not_started' | 'active' | 'ended' | 'inactive' = 'active';
+                              let statusLabel = "Siap Mulai Presensi";
+                              let statusBg = "bg-amber-50 border-amber-200 text-amber-700";
+
+                              if (isJpInactive) {
+                                buttonStatus = 'inactive';
+                                statusLabel = todaySetting?.reasonInactive ? `${todaySetting.reasonInactive}` : "Jam Pelajaran Nonaktif";
+                                statusBg = "bg-zinc-100 border-zinc-250 text-zinc-500 font-extrabold";
+                              } else if (startTime && endTime && currentTime) {
+                                const currentMin = parseInt(currentTime.split(':')[0]) * 60 + parseInt(currentTime.split(':')[1]);
+                                const startMin = parseInt(startTime.split(':')[0]) * 60 + parseInt(startTime.split(':')[1]);
+                                const endMin = parseInt(endTime.split(':')[0]) * 60 + parseInt(endTime.split(':')[1]);
+
+                                if (currentMin < startMin) {
+                                  buttonStatus = 'not_started';
+                                  statusLabel = "Belum Waktunya";
+                                  statusBg = "bg-zinc-100 border-zinc-200 text-zinc-500";
+                                } else if (currentMin > endMin) {
+                                  buttonStatus = 'ended';
+                                  statusLabel = "Sesi Selesai";
+                                  statusBg = "bg-rose-50 border-rose-150 text-rose-600";
+                                } else {
+                                  buttonStatus = 'active';
+                                  statusLabel = "Jam Mengajar Aktif";
+                                  statusBg = "bg-green-50 border-green-200 text-green-700 font-extrabold animate-pulse";
+                                }
+                              } else {
+                                statusLabel = "Waktu JP Belum Diatur (Standar Aktif)";
+                                statusBg = "bg-blue-50 border-blue-150 text-blue-600";
+                              }
+
+                              return (
+                                <div
+                                  key={sched.id}
+                                  className={`p-6 rounded-3xl border transition-all flex flex-col justify-between h-full relative overflow-hidden group ${
+                                    isJpInactive
+                                      ? 'bg-zinc-105 border-zinc-200/80 opacity-65'
+                                      : isAlreadyAttended
+                                      ? 'bg-emerald-50/25 border-emerald-100 hover:bg-emerald-50/40'
+                                      : buttonStatus === 'active'
+                                      ? 'bg-white border-green-300 ring-2 ring-green-100 shadow-md transform -translate-y-1'
+                                      : 'bg-zinc-50/45 border-zinc-100 opacity-80 hover:opacity-100'
+                                  }`}
+                                >
+                                  <div>
+                                    <div className="flex justify-between items-start mb-4 gap-2">
+                                      <div className="flex flex-col gap-1 text-left">
+                                        <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{sched.mapel || "Mata Pelajaran"} {isJpInactive && <span className="text-orange-600 font-extrabold border border-orange-100 bg-orange-50/50 px-1 py-0.5 rounded text-[8px]">(KEGIATAN)</span>}</span>
+                                        <span className="text-lg font-black text-zinc-900 group-hover:text-green-950 transition-colors">Kelas {sched.kelas}</span>
+                                      </div>
+                                      <div className={`px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-wider border whitespace-nowrap leading-none ${statusBg}`}>
+                                        {isAlreadyAttended ? "Selesai Presensi ✓" : statusLabel}
+                                      </div>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center gap-2 mb-4">
+                                      <div className="bg-zinc-100 px-2.5 py-1 rounded-xl text-[10px] font-black text-zinc-600 uppercase tracking-wide">
+                                        JP {schedJps.join(', ')}
+                                      </div>
+                                      {startTime && endTime ? (
+                                        <div className="bg-zinc-100 px-2.5 py-1 rounded-xl text-[10px] font-black text-zinc-600 font-mono tracking-wide flex items-center gap-1">
+                                          <Clock size={10} className="text-zinc-500" />
+                                          {startTime} - {endTime}
+                                        </div>
+                                      ) : (
+                                        <span className="text-[8px] text-zinc-400 uppercase font-black tracking-widest leading-none">Standard JP</span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-4 pt-4 border-t border-gray-100/60 font-sans">
+                                    {isAlreadyAttended ? (
+                                      <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5">
+                                        <div className="flex items-center gap-2.5 text-left">
+                                          <div className="w-7 h-7 rounded-lg bg-emerald-500 flex items-center justify-center text-white shrink-0 font-extrabold text-sm">
+                                            ✓
+                                          </div>
+                                          <div>
+                                            <p className="text-xs font-black text-emerald-950 uppercase leading-none">Sudah Presensi</p>
+                                            <p className="text-[9px] font-bold text-emerald-600 uppercase tracking-widest mt-1">Jam check-in: {attendanceRecord?.jam || ""}</p>
+                                          </div>
+                                        </div>
+                                        <span className="text-[8px] font-black text-emerald-500 uppercase tracking-widest bg-white border border-emerald-150 px-2 py-0.5 rounded-full shadow-xs">Sesi Valid</span>
+                                      </div>
+                                    ) : isJpInactive ? (
+                                      <div className="bg-orange-50 border border-orange-100/60 rounded-2xl p-3.5 flex items-center gap-3">
+                                        <div className="w-7 h-7 rounded-lg bg-orange-550 flex items-center justify-center text-white shrink-0 font-bold text-xs">
+                                          ℹ
+                                        </div>
+                                        <div className="text-left font-sans">
+                                          <p className="text-xs font-black text-orange-950 uppercase leading-none">Mengikuti Kegiatan</p>
+                                          <p className="text-[9px] font-bold text-orange-600 uppercase tracking-widest mt-1 line-clamp-1">{todaySetting?.reasonInactive || "Materi JP Nonaktif"}</p>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className={`p-4 rounded-2xl border transition-all ${
+                                        buttonStatus === 'active'
+                                          ? 'bg-amber-50/50 border-amber-200/80 text-amber-900'
+                                          : 'bg-zinc-50 border-zinc-200 text-zinc-500'
+                                      }`}>
+                                        <div className="flex items-start gap-3">
+                                          <div className={`w-8 h-8 rounded-xl shrink-0 font-bold flex items-center justify-center ${
+                                            buttonStatus === 'active'
+                                              ? 'bg-amber-500 text-white animate-pulse'
+                                              : 'bg-zinc-200 text-zinc-500'
+                                          }`}>
+                                            <QrCode size={16} />
+                                          </div>
+                                          <div className="text-left font-sans flex-1">
+                                            <p className={`text-xs font-black uppercase ${
+                                              buttonStatus === 'active' ? 'text-amber-950' : 'text-zinc-700'
+                                            }`}>
+                                              Wajib Scanner Presensi
+                                            </p>
+                                            <p className="text-[10px] font-bold text-gray-400 mt-1 leading-normal">
+                                              {buttonStatus === 'not_started' 
+                                                ? "Belum masuk jam pelajaran. Silakan scan kartu/QR Code pada alat scanner saat jam pelajaran dimulai." 
+                                                : buttonStatus === 'active'
+                                                ? "Lakukan presensi dengan memindai kartu presensi atau QR Code Anda langsung pada mesin scanner kelas."
+                                                : "Waktu mengajar Anda untuk sesi kelas ini telah berakhir."}
+                                            </p>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
+                    </>
+                  )}
+                </div>
+              )}
+
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                  <div className="lg:col-span-2 bg-white p-8 rounded-[2rem] shadow-sm border border-gray-100">
                     <div className="flex justify-between items-center mb-6">
@@ -5164,6 +5982,77 @@ export default function App() {
             <motion.div key="absensi-wali" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                 <div className="xl:col-span-2 space-y-6">
+                  {(() => {
+                    const today = new Date().toISOString().split('T')[0];
+                    const classStudents = students.filter(s => s.kelas === session?.kelas);
+                    const classAttendanceToday = attendance.filter(a => a.tanggal === today && classStudents.some(s => s.nisn === a.nisn));
+                    
+                    const countHadir = classAttendanceToday.filter(a => a.status === 'Hadir').length;
+                    const countTerlambat = classAttendanceToday.filter(a => a.status === 'Hadir' && a.terlambat > 0).length;
+                    const countSakit = classAttendanceToday.filter(a => a.status === 'Sakit').length;
+                    const countIzin = classAttendanceToday.filter(a => a.status === 'Izin').length;
+                    
+                    const isHoliday = holidays.some(h => h.tanggal === today) || new Date().getDay() === 0;
+                    const recordedAlfa = classAttendanceToday.filter(a => a.status === 'Alfa').length;
+                    const attendedNisns = new Set(classAttendanceToday.map(a => a.nisn));
+                    const notYetCheckedIn = classStudents.length - attendedNisns.size;
+                    const countAlfa = isHoliday ? 0 : (recordedAlfa + notYetCheckedIn);
+
+                    return (
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                        <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center gap-3">
+                          <div className="p-2.5 rounded-lg bg-green-50 text-green-600 shrink-0">
+                            <CheckCircle2 size={18} />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[9px] text-gray-400 font-bold uppercase tracking-wider truncate">Hadir</p>
+                            <p className="text-sm font-black text-gray-950 mt-0.5">{countHadir} <span className="text-gray-400 text-[10px] font-normal">/{classStudents.length}</span></p>
+                          </div>
+                        </div>
+
+                        <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center gap-3">
+                          <div className="p-2.5 rounded-lg bg-amber-50 text-amber-600 shrink-0">
+                            <Clock size={18} />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[9px] text-gray-400 font-bold uppercase tracking-wider truncate">Terlambat</p>
+                            <p className="text-sm font-black text-gray-950 mt-0.5">{countTerlambat}</p>
+                          </div>
+                        </div>
+
+                        <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center gap-3">
+                          <div className="p-2.5 rounded-lg bg-red-50 text-red-600 shrink-0">
+                            <Heart size={18} />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[9px] text-gray-400 font-bold uppercase tracking-wider truncate">Sakit</p>
+                            <p className="text-sm font-black text-gray-950 mt-0.5">{countSakit}</p>
+                          </div>
+                        </div>
+
+                        <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center gap-3">
+                          <div className="p-2.5 rounded-lg bg-indigo-50 text-indigo-600 shrink-0">
+                            <Info size={18} />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[9px] text-gray-400 font-bold uppercase tracking-wider truncate">Izin</p>
+                            <p className="text-sm font-black text-gray-950 mt-0.5">{countIzin}</p>
+                          </div>
+                        </div>
+
+                        <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center gap-3 col-span-2 md:col-span-1">
+                          <div className="p-2.5 rounded-lg bg-rose-50 text-rose-600 shrink-0">
+                            <XCircle size={18} />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[9px] text-gray-400 font-bold uppercase tracking-wider truncate">Alfa</p>
+                            <p className="text-sm font-black text-gray-950 mt-0.5">{countAlfa}</p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                     <div className="p-6 bg-green-50 border-b border-green-100 flex justify-between items-center">
                        <div>
@@ -6397,173 +7286,135 @@ export default function App() {
           {activePanel === 'pengaturan' && (
             <motion.div key="pengaturan" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-                  <div className="flex items-center justify-between mb-6">
-                    <div className="flex items-center gap-3">
-                      <div className="bg-green-100 p-2 rounded-xl text-green-700">
-                        <Clock size={20} />
+                {/* COLUMN 1 (LEFT): PENGATURAN JAM MASUK, PULANG & JP AKTIF & KALENDER */}
+                <div className="space-y-8">
+                  {/* Jam Masuk, Pulang & JP Aktif Card */}
+                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 animate-fadeIn bg-linear-to-b from-white to-zinc-50/50">
+                    <div className="flex items-center justify-between mb-6">
+                      <div className="flex items-center gap-3">
+                        <div className="bg-green-100 p-2.5 rounded-xl text-green-700 border border-green-200">
+                          <Clock size={20} className="shrink-0" />
+                        </div>
+                        <div className="text-left">
+                          <h3 className="text-lg font-bold">Jam Masuk, Pulang & JP Aktif</h3>
+                          <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider">Atur jam masuk, jam pulang, dan tandai JP pelajaran aktif (mempengaruhi kalender)</p>
+                        </div>
                       </div>
-                      <h3 className="text-lg font-bold">Jam Masuk & Pulang</h3>
+                      {settings.length === 0 && (
+                        <button 
+                          onClick={async () => {
+                            toggleLoader(true);
+                            await firestoreService.initializeSettings();
+                            toggleLoader(false);
+                          }}
+                          className="bg-green-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-green-700 font-bold"
+                        >
+                          Inisialisasi
+                        </button>
+                      )}
                     </div>
-                    {settings.length === 0 && (
-                      <button 
-                        onClick={async () => {
-                          toggleLoader(true);
-                          await firestoreService.initializeSettings();
-                          toggleLoader(false);
-                        }}
-                        className="bg-green-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-green-700"
-                      >
-                        Inisialisasi
-                      </button>
-                    )}
-                  </div>
-                  
-                  <div className="space-y-4">
-                    {[...settings].sort((a,b) => dayOrder[a.hari] - dayOrder[b.hari]).map((s, idx) => {
-                      const today = new Date();
-                      // Day number: Minggu=0, Senin=1, ...
-                      const currentDay = today.getDay();
-                      // targetDay from dayOrder: Senin=1, ... Minggu=7 -> map to 0-6
-                      const targetDayNum = dayOrder[s.hari] === 7 ? 0 : dayOrder[s.hari];
-                      
-                      // Calculate date for this specific day of THIS current week
-                      const diff = targetDayNum - currentDay;
-                      const dateAtDay = new Date();
-                      dateAtDay.setDate(today.getDate() + diff);
-                      
-                      // Format precisely as YYYY-MM-DD in LOCAL time
-                      const dateStr = dateAtDay.toLocaleDateString('en-CA'); 
-                      const holiday = holidays.find(h => h.tanggal === dateStr);
-                      
-                      const limitJp = s.hari === 'Jumat' ? 6 : 8;
-                      const defaultJps = Array.from({ length: limitJp }, (_, i) => i + 1);
-                      
-                      // Dynamically resolve. If holiday is active, all JPs are automatically inactive (empty array) with holiday description
-                      const resActiveJps = holiday ? [] : (localActiveJps[s.hari] !== undefined ? localActiveJps[s.hari] : (s.activeJps && Array.isArray(s.activeJps) ? s.activeJps : defaultJps));
-                      const resReasonInactive = holiday ? holiday.keterangan : (localReasonInactive[s.hari] !== undefined ? localReasonInactive[s.hari] : (s.reasonInactive || ''));
-                      const resMasuk = localMasuk[s.hari] !== undefined ? localMasuk[s.hari] : (s.masuk || '07:15');
-                      const resPulang = localPulang[s.hari] !== undefined ? localPulang[s.hari] : (s.pulang || '14:00');
-                      
-                      const isDaySaved = savedDaysStatus[s.hari] || 'idle';
 
-                      return (
-                        <div key={idx} className={`flex flex-col p-4 rounded-3xl ${holiday ? 'bg-red-50/50 border border-red-100' : 'bg-gray-50/80 border border-gray-100'} gap-3 transition-all hover:bg-white hover:shadow-sm`}>
-                          <div className="flex items-center justify-between">
-                            <div className="flex flex-col">
-                              <span className={`font-black text-sm text-zinc-800 ${holiday ? 'text-red-900' : ''}`}>{s.hari}</span>
-                              <span className="text-[8px] text-gray-400 font-black uppercase tracking-widest">{dateAtDay.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
-                              {holiday && <span className="text-[8px] text-red-600 font-bold uppercase mt-1">LIBUR: {holiday.keterangan}</span>}
+                    <div className="space-y-6">
+                      {[...settings].sort((a,b) => dayOrder[a.hari] - dayOrder[b.hari]).filter(s => s.hari !== 'Minggu').map((s, idx) => {
+                        const today = new Date();
+                        const currentDay = today.getDay();
+                        const targetDayNum = dayOrder[s.hari] === 7 ? 0 : dayOrder[s.hari];
+                        const diff = targetDayNum - currentDay;
+                        const dateAtDay = new Date();
+                        dateAtDay.setDate(today.getDate() + diff);
+                        
+                        const dateStr = dateAtDay.toLocaleDateString('en-CA'); 
+                        const holiday = holidays.find(h => h.tanggal === dateStr);
+                        
+                        const limitJp = s.hari === 'Jumat' ? 6 : 8;
+                        const defaultJps = Array.from({ length: limitJp }, (_, i) => i + 1);
+                        
+                        const resActiveJps = holiday ? [] : (localActiveJps[s.hari] !== undefined ? localActiveJps[s.hari] : (s.activeJps && Array.isArray(s.activeJps) ? s.activeJps : defaultJps));
+                        const resReasonInactive = holiday ? holiday.keterangan : (localReasonInactive[s.hari] !== undefined ? localReasonInactive[s.hari] : (s.reasonInactive || ''));
+                        const resMasuk = localMasuk[s.hari] !== undefined ? localMasuk[s.hari] : (s.masuk || '07:15');
+                        const resPulang = localPulang[s.hari] !== undefined ? localPulang[s.hari] : (s.pulang || '14:00');
+                        
+                        const isDaySaved = savedDaysStatus[s.hari] || 'idle';
+
+                        return (
+                          <div key={idx} className={`flex flex-col p-4 rounded-3xl ${holiday ? 'bg-red-50/50 border border-red-100' : 'bg-gray-50/80 border border-gray-100'} gap-4 transition-all hover:bg-white hover:shadow-sm`}>
+                            {/* Header Row */}
+                            <div className="flex items-center justify-between">
+                              <div className="flex flex-col text-left">
+                                <span className={`font-black text-sm text-zinc-800 ${holiday ? 'text-red-900' : ''}`}>Hari {s.hari}</span>
+                                <span className="text-[8px] text-gray-400 font-black uppercase tracking-widest">{dateAtDay.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                                {holiday && <span className="text-[8px] text-red-650 font-bold uppercase mt-1">LIBUR: {holiday.keterangan}</span>}
+                              </div>
+                              
+                              <span className="text-[9px] text-green-700 font-black bg-green-50 border border-green-150 px-2.5 py-0.5 rounded-full select-none leading-none">
+                                {resActiveJps.length} dari {limitJp} JP Aktif
+                              </span>
                             </div>
-                            <div className="flex items-center gap-4">
-                              <div className="flex flex-col items-center">
-                                <span className="text-[8px] font-black text-gray-400 uppercase mb-1">Masuk</span>
+
+                            {/* Jam Masuk & Pulang */}
+                            <div className="grid grid-cols-2 gap-4 bg-white p-3 rounded-2xl border border-gray-150/60 shadow-sm">
+                              <div className="flex flex-col text-left">
+                                <span className="text-[9px] font-black text-gray-400 uppercase tracking-wider mb-1 pl-1">Jam Masuk</span>
                                 <input 
                                   type="time" 
                                   value={resMasuk} 
-                                  disabled={s.hari === 'Minggu' || !!holiday}
+                                  disabled={!!holiday}
                                   onChange={(e) => {
                                     setLocalMasuk(prev => ({ ...prev, [s.hari]: e.target.value }));
                                   }}
-                                  className="bg-white border border-gray-100 rounded-xl px-3 py-1.5 text-xs font-bold shadow-sm focus:ring-2 focus:ring-green-500 outline-none disabled:opacity-30" 
+                                  className="w-full bg-gray-50/50 border border-gray-150 rounded-xl px-3 py-2 text-xs font-bold shadow-sm focus:ring-2 focus:ring-green-500 outline-none disabled:opacity-30" 
                                 />
                               </div>
-                              <div className="flex flex-col items-center">
-                                <span className="text-[8px] font-black text-gray-400 uppercase mb-1">Pulang</span>
+                              <div className="flex flex-col text-left">
+                                <span className="text-[9px] font-black text-gray-400 uppercase tracking-wider mb-1 pl-1">Jam Pulang</span>
                                 <input 
                                   type="time" 
                                   value={resPulang} 
-                                  disabled={s.hari === 'Minggu' || !!holiday}
+                                  disabled={!!holiday}
                                   onChange={(e) => {
                                     setLocalPulang(prev => ({ ...prev, [s.hari]: e.target.value }));
                                   }}
-                                  className="bg-white border border-gray-100 rounded-xl px-3 py-1.5 text-xs font-bold shadow-sm focus:ring-2 focus:ring-green-500 outline-none disabled:opacity-30" 
+                                  className="w-full bg-gray-50/50 border border-gray-150 rounded-xl px-3 py-2 text-xs font-bold shadow-sm focus:ring-2 focus:ring-green-500 outline-none disabled:opacity-30" 
                                 />
                               </div>
                             </div>
-                          </div>
 
-                          {s.hari !== 'Minggu' && (
-                            <div className="border-t border-gray-100/70 pt-3 mt-1 space-y-3">
-                              {/* Toggle JP Aktif */}
-                              <div>
-                                <div className="flex justify-between items-start mb-2">
-                                  <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest mt-1">Atur JP Aktif Hari {s.hari}:</span>
-                                  <div className="flex flex-col items-end gap-1.5">
-                                    <span className="text-[8px] text-green-600 font-bold bg-green-50 px-1.5 py-0.5 rounded-full">{resActiveJps.length} dari {limitJp} JP Aktif</span>
+                            {/* GREEN ICON JP ACTIVE SELECTION (As requested) */}
+                            <div className="flex flex-col gap-1 text-left bg-white p-3 rounded-2xl border border-gray-150/60 shadow-sm">
+                              <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest leading-none mb-1.5 pl-1">Pilih Jam Pelajaran (JP) Aktif:</span>
+                              <div className="flex flex-wrap gap-1.55">
+                                {Array.from({ length: limitJp }, (_, i) => i + 1).map((jpNum) => {
+                                  const isActive = resActiveJps.includes(jpNum);
+                                  return (
                                     <button
+                                      key={jpNum}
                                       type="button"
-                                      disabled={isDaySaved === 'saving' || !!holiday}
-                                      onClick={async () => {
-                                        setSavedDaysStatus(prev => ({ ...prev, [s.hari]: 'saving' }));
-                                        try {
-                                          await firestoreService.savePengaturanHari(s.hari, resMasuk, resPulang, resActiveJps, resReasonInactive, dateStr);
-                                          setSavedDaysStatus(prev => ({ ...prev, [s.hari]: 'saved' }));
-                                          
-                                          // Clear local temporary overrides so it gets loaded from settings state next
-                                          setLocalActiveJps(prev => { const n = { ...prev }; delete n[s.hari]; return n; });
-                                          setLocalReasonInactive(prev => { const n = { ...prev }; delete n[s.hari]; return n; });
-                                          setLocalMasuk(prev => { const n = { ...prev }; delete n[s.hari]; return n; });
-                                          setLocalPulang(prev => { const n = { ...prev }; delete n[s.hari]; return n; });
-                                          
-                                          setTimeout(() => {
-                                            setSavedDaysStatus(prev => ({ ...prev, [s.hari]: 'idle' }));
-                                          }, 2500);
-                                          
-                                          triggerSuccess("BERHASIL", `Pengaturan hari ${s.hari} berhasil disesuaikan.`);
-                                        } catch (err) {
-                                          console.error(err);
-                                          setSavedDaysStatus(prev => ({ ...prev, [s.hari]: 'idle' }));
+                                      disabled={!!holiday}
+                                      onClick={() => {
+                                        let updatedJps: number[];
+                                        if (isActive) {
+                                          updatedJps = resActiveJps.filter(j => j !== jpNum);
+                                        } else {
+                                          updatedJps = [...resActiveJps, jpNum].sort((a, b) => a - b);
                                         }
+                                        setLocalActiveJps(prev => ({ ...prev, [s.hari]: updatedJps }));
                                       }}
-                                      className={`text-[8px] font-black uppercase px-2.5 py-1 rounded-lg transition-all cursor-pointer shadow-sm border ${
-                                        isDaySaved === 'saved'
-                                          ? 'bg-emerald-600 text-white border-emerald-600'
-                                          : isDaySaved === 'saving'
-                                          ? 'bg-zinc-100 text-zinc-400 border-zinc-200 animate-pulse'
-                                          : !!holiday
-                                          ? 'bg-red-100 text-red-400 border-red-200 cursor-not-allowed'
-                                          : 'bg-green-700 hover:bg-green-800 text-white border-green-700'
-                                      }`}
+                                      className={`w-7 h-7 flex items-center justify-center rounded-lg text-[10px] font-black transition-all cursor-pointer ${
+                                        isActive 
+                                          ? 'bg-green-600 text-white shadow-sm hover:bg-green-700 border border-green-600 animate-fadeIn' 
+                                          : 'bg-zinc-50 border border-zinc-200 text-zinc-400 hover:bg-zinc-100'
+                                      } disabled:opacity-40 disabled:cursor-not-allowed`}
                                     >
-                                      {isDaySaved === 'saved' ? 'Tersimpan ✓' : isDaySaved === 'saving' ? 'Menyimpan...' : 'Simpan'}
+                                      {jpNum}
                                     </button>
-                                  </div>
-                                </div>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {Array.from({ length: limitJp }, (_, i) => i + 1).map((jpNum) => {
-                                    const isActive = resActiveJps.includes(jpNum);
-                                    return (
-                                      <button
-                                        key={jpNum}
-                                        type="button"
-                                        disabled={!!holiday}
-                                        onClick={() => {
-                                          let updatedJps: number[];
-                                          if (isActive) {
-                                            updatedJps = resActiveJps.filter(j => j !== jpNum);
-                                          } else {
-                                            updatedJps = [...resActiveJps, jpNum].sort((a, b) => a - b);
-                                          }
-                                          setLocalActiveJps(prev => ({ ...prev, [s.hari]: updatedJps }));
-                                        }}
-                                        className={`w-7 h-7 flex items-center justify-center rounded-lg text-[10px] font-black transition-all ${
-                                          isActive 
-                                            ? 'bg-green-600 text-white shadow-sm hover:bg-green-700' 
-                                            : 'bg-white border border-gray-100 text-gray-400 hover:bg-gray-100'
-                                        } disabled:opacity-40 disabled:cursor-not-allowed`}
-                                      >
-                                        {jpNum}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
+                                  );
+                                })}
                               </div>
 
                               {/* Input Keterangan bila JP tidak aktif */}
                               {resActiveJps.length < limitJp && (
-                                <div className="space-y-1">
-                                  <label className="block text-[9px] font-black text-orange-500 uppercase tracking-widest">Keterangan Kegiatan (Bila JP Tidak Aktif)</label>
+                                <div className="space-y-1 text-left mt-3 pt-2 border-t border-dashed border-gray-100">
+                                  <label className="block text-[9px] font-black text-orange-650 uppercase tracking-widest pl-1 leading-none">Keterangan Kegiatan (JP Nonaktif)</label>
                                   <input 
                                     type="text"
                                     placeholder="Misal: Yasinan / Upacara Bendera / Pramuka"
@@ -6572,110 +7423,67 @@ export default function App() {
                                     onChange={(e) => {
                                       setLocalReasonInactive(prev => ({ ...prev, [s.hari]: e.target.value }));
                                     }}
-                                    className="w-full bg-orange-50/50 border border-orange-100 rounded-xl px-3 py-1.5 text-xs font-bold text-orange-900 placeholder-orange-300 focus:ring-2 focus:ring-orange-500 outline-none disabled:opacity-75"
+                                    className="w-full bg-orange-50/50 border border-orange-100/70 rounded-xl px-3 py-1.5 text-xs font-bold text-orange-900 placeholder-orange-300 focus:ring-2 focus:ring-orange-500 outline-none disabled:opacity-75"
                                   />
                                 </div>
                               )}
                             </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                    <div className="bg-red-50 p-4 rounded-2xl border border-red-100 mt-4 flex items-center justify-center gap-2">
-                       <Calendar size={14} className="text-red-600" />
-                       <span className="text-[10px] font-black text-red-700 uppercase tracking-widest">HARI MINGGU: LIBUR RUTIN (TANPA SETTING JAM)</span>
-                    </div>
-                  </div>
-                  <p className="mt-4 text-[10px] text-gray-400 font-bold uppercase tracking-widest text-center italic">* Simpan otomatis saat kursor keluar</p>
-                </div>
 
-                <div className="space-y-8">
-                  {/* Hari Libur Card */}
-                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 animate-fadeIn">
-                    <div className="flex items-center gap-3 mb-6">
-                      <div className="bg-red-100 p-2 rounded-xl text-red-600">
-                        <Calendar size={20} />
-                      </div>
-                      <h3 className="text-lg font-bold">Hari Libur</h3>
-                    </div>
-
-                    {/* Tambah Hari Libur Form (di bagian atas) */}
-                    <div className="bg-gray-50/85 p-5 rounded-2xl border-2 border-dashed border-gray-200 mb-6">
-                      <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest pl-1 mb-2">Form Tambah Hari Libur</h4>
-                      <div className="space-y-3">
-                        <input 
-                          type="date" 
-                          value={newLibur.tanggal}
-                          onChange={e => setNewLibur({...newLibur, tanggal: e.target.value})}
-                          className="w-full bg-white border-0 rounded-xl px-4 py-2.5 text-xs font-bold shadow-sm focus:ring-2 focus:ring-red-500 outline-none" 
-                        />
-                        <input 
-                          type="text" 
-                          placeholder="Keterangan Hari Libur..." 
-                          value={newLibur.keterangan}
-                          onChange={e => setNewLibur({...newLibur, keterangan: e.target.value})}
-                          className="w-full bg-white border-0 rounded-xl px-4 py-2.5 text-xs font-bold shadow-sm focus:ring-2 focus:ring-red-500 outline-none" 
-                        />
-                        <button 
-                          type="button"
-                          onClick={async () => {
-                            if (!newLibur.tanggal || !newLibur.keterangan) return;
-                            toggleLoader(true);
-                            try {
-                              await firestoreService.saveLiburAgenda(newLibur.tanggal, newLibur.keterangan);
-                              setNewLibur({ tanggal: '', keterangan: '' });
-                              triggerSuccess("BERHASIL", "Hari libur ditambahkan.");
-                            } catch (e) {
-                              alert("Gagal menyimpan.");
-                            } finally {
-                              toggleLoader(false);
-                            }
-                          }}
-                          className="w-full bg-red-600 text-white rounded-xl py-2.5 font-bold hover:bg-red-500 transition-all text-xs cursor-pointer text-center select-none shadow-sm font-bold uppercase tracking-wider"
-                        >
-                          Tambah Hari Libur
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Data List (di bagian bawah) */}
-                    <div className="space-y-3">
-                      <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest pl-1">Daftar Hari Libur Terdaftar</h4>
-                      {holidays.length === 0 ? (
-                        <p className="text-xs text-gray-400 italic font-bold p-2">Belum ada hari libur khusus yang ditambahkan.</p>
-                      ) : (
-                        holidays.map((h, idx) => (
-                          <div key={idx} className="flex items-center justify-between p-4 bg-red-50/50 rounded-2xl border border-red-100 transition-all hover:bg-red-50">
-                            <div>
-                              <p className="font-black text-red-900 text-sm">{h.keterangan}</p>
-                              <p className="text-xs text-red-500/80 font-bold font-mono">{h.tanggal}</p>
-                            </div>
-                            <button 
-                              type="button"
-                              onClick={async () => { 
-                                if (confirm(`Hapus hari libur ${h.keterangan}?`)) {
-                                  toggleLoader(true);
+                            {/* Unified Save Row (Changes to activeJps here will influence the educational calendar) */}
+                            <div className="flex flex-wrap gap-2 justify-end pt-3 border-t border-gray-150">
+                              <button
+                                type="button"
+                                disabled={isDaySaved === 'saving' || !!holiday}
+                                onClick={async () => {
+                                  setSavedDaysStatus(prev => ({ ...prev, [s.hari]: 'saving' }));
                                   try {
-                                    await firestoreService.hapusLiburAgenda(h.tanggal);
-                                    triggerSuccess("BERHASIL", "Hari libur berhasil dihapus.");
-                                  } catch (e) {
-                                    alert("Gagal menghapus.");
-                                  } finally {
-                                    toggleLoader(false);
+                                    // Save jam masuk/pulang, activeJps, reasonInactive, and targetDate. This updates the educational calendar only for that specific date and day.
+                                    await firestoreService.savePengaturanHari(
+                                      s.hari, 
+                                      resMasuk, 
+                                      resPulang, 
+                                      resActiveJps, 
+                                      resReasonInactive, 
+                                      dateStr, 
+                                      undefined // keeps original jpTimes intact
+                                    );
+
+                                    setSavedDaysStatus(prev => ({ ...prev, [s.hari]: 'saved' }));
+                                    setLocalActiveJps(prev => { const n = { ...prev }; delete n[s.hari]; return n; });
+                                    setLocalReasonInactive(prev => { const n = { ...prev }; delete n[s.hari]; return n; });
+                                    setLocalMasuk(prev => { const n = { ...prev }; delete n[s.hari]; return n; });
+                                    setLocalPulang(prev => { const n = { ...prev }; delete n[s.hari]; return n; });
+
+                                    setTimeout(() => {
+                                      setSavedDaysStatus(prev => ({ ...prev, [s.hari]: 'idle' }));
+                                    }, 2000);
+
+                                    triggerSuccess("BERHASIL", `Hari ${s.hari} (${dateStr}) berhasil disimpan.`);
+                                  } catch (err) {
+                                    console.error(err);
+                                    setSavedDaysStatus(prev => ({ ...prev, [s.hari]: 'idle' }));
                                   }
-                                }
-                              }}
-                              className="text-red-400 hover:text-red-600 p-2 cursor-pointer transition-colors"
-                            >
-                              <Trash2 size={16} />
-                            </button>
+                                }}
+                                className={`text-[8.5px] font-black uppercase px-3 py-1.5 rounded-lg transition-all cursor-pointer shadow-sm border ${
+                                  isDaySaved === 'saved'
+                                    ? 'bg-emerald-600 text-white border-emerald-600'
+                                    : isDaySaved === 'saving'
+                                    ? 'bg-zinc-100 text-zinc-400 border-zinc-200 animate-pulse'
+                                    : !!holiday
+                                    ? 'bg-red-100 text-red-400 border-red-200 cursor-not-allowed'
+                                    : 'bg-green-700 hover:bg-green-800 text-white border-green-700'
+                                }`}
+                              >
+                                {isDaySaved === 'saved' ? 'Tersimpan ✓' : isDaySaved === 'saving' ? 'Menyimpan...' : 'Simpan JP & Jam'}
+                              </button>
+                            </div>
                           </div>
-                        ))
-                      )}
+                        );
+                      })}
                     </div>
                   </div>
 
-                  {/* Kalender Aktif Card */}
+                  {/* Kalender Pengaturan Card */}
                   <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 animate-fadeIn">
                     <div className="flex flex-col gap-4 mb-6">
                       <div className="flex items-center gap-3">
@@ -6886,7 +7694,292 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Logo & Identity Configuration */}
+                {/* COLUMN 2 (RIGHT): PENGATURAN WAKTU JP & HARI LIBUR */}
+                <div className="space-y-8">
+                  {/* Waktu Jam Pelajaran (JP) Card */}
+                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 animate-fadeIn bg-linear-to-b from-white to-zinc-50/50">
+                    <div className="flex items-center gap-3 mb-6">
+                      <div className="bg-green-100 p-2.5 rounded-xl text-green-700 border border-green-200">
+                        <Clock size={20} className="shrink-0" />
+                      </div>
+                      <div className="flex flex-col text-left">
+                        <h3 className="text-lg font-bold">Waktu Jam Pelajaran (JP)</h3>
+                        <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider">Atur jam mulai dan selesai untuk tiap JP pelajaran per hari kerja (khusus hari tersebut)</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-6">
+                      {[...settings].sort((a,b) => dayOrder[a.hari] - dayOrder[b.hari]).filter(s => s.hari !== 'Minggu').map((s, idx) => {
+                        const today = new Date();
+                        const currentDay = today.getDay();
+                        const targetDayNum = dayOrder[s.hari] === 7 ? 0 : dayOrder[s.hari];
+                        const diff = targetDayNum - currentDay;
+                        const dateAtDay = new Date();
+                        dateAtDay.setDate(today.getDate() + diff);
+                        
+                        const dateStr = dateAtDay.toLocaleDateString('en-CA'); 
+                        const holiday = holidays.find(h => h.tanggal === dateStr);
+                        
+                        const limitJp = s.hari === 'Jumat' ? 6 : 8;
+                        const defaultJps = Array.from({ length: limitJp }, (_, i) => i + 1);
+                        
+                        const resMasuk = localMasuk[s.hari] !== undefined ? localMasuk[s.hari] : (s.masuk || '07:15');
+                        const resPulang = localPulang[s.hari] !== undefined ? localPulang[s.hari] : (s.pulang || '14:00');
+                        
+                        const isDaySaved = savedDaysStatus[s.hari] || 'idle';
+
+                        return (
+                          <div key={idx} className={`flex flex-col p-4 rounded-3xl ${holiday ? 'bg-red-50/50 border border-red-100' : 'bg-gray-50/80 border border-gray-100'} gap-3 transition-all hover:bg-white hover:shadow-sm`}>
+                            <div className="flex items-center justify-between shadow-xs p-3 rounded-2xl bg-white border border-gray-150/50">
+                              <div className="flex flex-col text-left">
+                                <span className={`font-black text-sm text-zinc-800 ${holiday ? 'text-red-900' : ''}`}>JP Hari {s.hari}</span>
+                                <span className="text-[8px] text-gray-400 font-black uppercase tracking-widest">{dateAtDay.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                                {holiday && <span className="text-[8px] text-red-650 font-bold uppercase mt-1">LIBUR: {holiday.keterangan}</span>}
+                              </div>
+                            </div>
+
+                            {/* JP Time Settings Editor */}
+                            <div className="bg-white p-3 rounded-2xl border border-gray-150/65 shadow-sm flex flex-col gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedJpDays(prev => ({ ...prev, [s.hari]: !prev[s.hari] }))}
+                                className="flex items-center justify-between w-full text-zinc-555 hover:text-zinc-850 transition-colors py-1 cursor-pointer outline-none"
+                              >
+                                <span className="text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5 text-zinc-500">
+                                  <Clock size={12} className="text-green-600 shrink-0" />
+                                  Atur Waktu Tiap JP:
+                                </span>
+                                <span className="text-[9px] font-black tracking-wider text-green-700 bg-green-50 border border-green-100 px-2.5 py-0.5 rounded-full select-none">
+                                  {expandedJpDays[s.hari] ? 'Tutup ▲' : 'Buka ▼'}
+                                </span>
+                              </button>
+
+                              {expandedJpDays[s.hari] && (
+                                <div className="mt-1 space-y-3 bg-zinc-50 p-3 rounded-2xl border border-zinc-150 animate-fadeIn">
+                                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                                    <span className="text-[8px] font-black uppercase tracking-widest text-zinc-400">Jam Mulai & Selesai JP</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const standardTimes: any = {};
+                                        let startHour = 7;
+                                        let startMin = 15;
+                                        for (let i = 1; i <= limitJp; i++) {
+                                          if (i === 5) {
+                                            startMin += 20; // 20 min break
+                                            if (startMin >= 60) {
+                                              startHour += Math.floor(startMin / 60);
+                                              startMin = startMin % 60;
+                                            }
+                                          }
+                                          const sHourStr = String(startHour).padStart(2, '0');
+                                          const sMinStr = String(startMin).padStart(2, '0');
+                                          
+                                          startMin += 40; // Each JP is 40 minutes
+                                          if (startMin >= 60) {
+                                            startHour += Math.floor(startMin / 60);
+                                            startMin = startMin % 60;
+                                          }
+                                          const eHourStr = String(startHour).padStart(2, '0');
+                                          const eMinStr = String(startMin).padStart(2, '0');
+                                          
+                                          standardTimes[i] = {
+                                            start: `${sHourStr}:${sMinStr}`,
+                                            end: `${eHourStr}:${eMinStr}`
+                                          };
+                                        }
+                                        setLocalJpTimes(prev => ({ ...prev, [s.hari]: standardTimes }));
+                                      }}
+                                      className="text-[8px] font-black text-green-750 uppercase bg-green-100 border border-green-250 hover:bg-green-200 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
+                                    >
+                                      Auto-Fill Waktu Standar JP
+                                    </button>
+                                  </div>
+
+                                  <div className="grid grid-cols-2 gap-2">
+                                    {Array.from({ length: limitJp }, (_, i) => i + 1).map((jpNumber) => {
+                                      const originalJpData = s.jpTimes?.[jpNumber] || { start: "", end: "" };
+                                      const localJpData = localJpTimes[s.hari]?.[jpNumber];
+                                      const jpStartVal = localJpData?.start !== undefined ? localJpData.start : originalJpData.start;
+                                      const jpEndVal = localJpData?.end !== undefined ? localJpData.end : originalJpData.end;
+
+                                      return (
+                                        <div key={jpNumber} className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-2 bg-white rounded-xl border border-gray-150/60 hover:shadow-xs transition-all gap-1.5 animate-fadeIn">
+                                          <span className="text-[9px] font-black text-zinc-550">JP {jpNumber}</span>
+                                          <div className="flex items-center gap-1">
+                                            <input
+                                              type="time"
+                                              value={jpStartVal}
+                                              onChange={(e) => {
+                                                const val = e.target.value;
+                                                setLocalJpTimes(prev => {
+                                                  const cur = prev[s.hari] ? { ...prev[s.hari] } : { ...(s.jpTimes || {}) };
+                                                  cur[jpNumber] = { ...(cur[jpNumber] || { start: "", end: "" }), start: val };
+                                                  return { ...prev, [s.hari]: cur };
+                                                });
+                                              }}
+                                              className="w-16 text-center bg-gray-50 border border-gray-150 rounded px-1.5 py-0.5 text-[10px] font-bold focus:ring-1 focus:ring-green-500 outline-none"
+                                            />
+                                            <span className="text-[10px] text-gray-400 font-extrabold">&mdash;</span>
+                                            <input
+                                              type="time"
+                                              value={jpEndVal}
+                                              onChange={(e) => {
+                                                const val = e.target.value;
+                                                setLocalJpTimes(prev => {
+                                                  const cur = prev[s.hari] ? { ...prev[s.hari] } : { ...(s.jpTimes || {}) };
+                                                  cur[jpNumber] = { ...(cur[jpNumber] || { start: "", end: "" }), end: val };
+                                                  return { ...prev, [s.hari]: cur };
+                                                });
+                                              }}
+                                              className="w-16 text-center bg-gray-50 border border-gray-150 rounded px-1.5 py-0.5 text-[10px] font-bold focus:ring-1 focus:ring-green-500 outline-none"
+                                            />
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Direct Day Saving for JP time edits */}
+                            <div className="flex justify-end pt-2 border-t border-gray-100">
+                              <button
+                                type="button"
+                                disabled={isDaySaved === 'saving' || !!holiday}
+                                onClick={async () => {
+                                  setSavedDaysStatus(prev => ({ ...prev, [s.hari]: 'saving' }));
+                                  try {
+                                    const mergedJpTimes = { ...(s.jpTimes || {}), ...(localJpTimes[s.hari] || {}) };
+                                    
+                                    await firestoreService.savePengaturanHari(
+                                      s.hari, 
+                                      resMasuk, 
+                                      resPulang, 
+                                      undefined, 
+                                      undefined, 
+                                      undefined, 
+                                      mergedJpTimes
+                                    );
+
+                                    setSavedDaysStatus(prev => ({ ...prev, [s.hari]: 'saved' }));
+                                    setLocalJpTimes(prev => { const n = { ...prev }; delete n[s.hari]; return n; });
+
+                                    setTimeout(() => {
+                                      setSavedDaysStatus(prev => ({ ...prev, [s.hari]: 'idle' }));
+                                    }, 2000);
+
+                                    triggerSuccess("BERHASIL", `Waktu Jam Pelajaran Hari ${s.hari} berhasil disimpan.`);
+                                  } catch (err) {
+                                    console.error(err);
+                                    setSavedDaysStatus(prev => ({ ...prev, [s.hari]: 'idle' }));
+                                  }
+                                }}
+                                className={`text-[8.5px] font-black uppercase px-3 py-1.5 rounded-lg transition-all cursor-pointer shadow-sm border ${
+                                  isDaySaved === 'saved'
+                                    ? 'bg-emerald-600 text-white border-emerald-600'
+                                    : isDaySaved === 'saving'
+                                    ? 'bg-zinc-100 text-zinc-400 border-zinc-200 animate-pulse'
+                                    : !!holiday
+                                    ? 'bg-red-100 text-red-400 border-red-200 cursor-not-allowed'
+                                    : 'bg-green-700 hover:bg-green-800 text-white border-green-700'
+                                }`}
+                              >
+                                {isDaySaved === 'saved' ? 'Tersimpan ✓' : isDaySaved === 'saving' ? 'Menyimpan...' : 'Simpan Waktu Jam Pelajaran'}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Hari Libur Card */}
+                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 animate-fadeIn">
+                    <div className="flex items-center gap-3 mb-6">
+                      <div className="bg-red-100 p-2 rounded-xl text-red-650 border border-red-205">
+                        <Calendar size={20} />
+                      </div>
+                      <h3 className="text-lg font-bold">Hari Libur</h3>
+                    </div>
+
+                    <div className="bg-gray-50/85 p-5 rounded-2xl border-2 border-dashed border-gray-200 mb-6 text-left">
+                      <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest pl-1 mb-2">Form Tambah Hari Libur</h4>
+                      <div className="space-y-3">
+                        <input 
+                          type="date" 
+                          value={newLibur.tanggal}
+                          onChange={e => setNewLibur({...newLibur, tanggal: e.target.value})}
+                          className="w-full bg-white border border-gray-150 rounded-xl px-4 py-2.5 text-xs font-bold outline-none" 
+                        />
+                        <input 
+                          type="text" 
+                          placeholder="Keterangan Hari Libur..." 
+                          value={newLibur.keterangan}
+                          onChange={e => setNewLibur({...newLibur, keterangan: e.target.value})}
+                          className="w-full bg-white border border-gray-150 rounded-xl px-4 py-2.5 text-xs font-bold outline-none" 
+                        />
+                        <button 
+                          type="button"
+                          onClick={async () => {
+                            if (!newLibur.tanggal || !newLibur.keterangan) return;
+                            toggleLoader(true);
+                            try {
+                              await firestoreService.saveLiburAgenda(newLibur.tanggal, newLibur.keterangan);
+                              setNewLibur({ tanggal: '', keterangan: '' });
+                              triggerSuccess("BERHASIL", "Hari libur ditambahkan.");
+                            } catch (e) {
+                              alert("Gagal menyimpan.");
+                            } finally {
+                              toggleLoader(false);
+                            }
+                          }}
+                          className="w-full bg-red-600 text-white rounded-xl py-2.5 font-bold hover:bg-red-500 transition-all text-xs cursor-pointer text-center select-none shadow-sm font-bold uppercase tracking-wider"
+                        >
+                          Tambah Hari Libur
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest pl-1 text-left block">Daftar Hari Libur Terdaftar</h4>
+                      {holidays.length === 0 ? (
+                        <p className="text-xs text-gray-400 italic font-bold p-2 text-center bg-gray-50/50 rounded-xl">Belum ada hari libur khusus yang ditambahkan.</p>
+                      ) : (
+                        holidays.map((h, idx) => (
+                          <div key={idx} className="flex items-center justify-between p-4 bg-red-50/50 rounded-2xl border border-red-100 transition-all hover:bg-red-50">
+                            <div className="text-left">
+                              <p className="font-black text-red-900 text-sm">{h.keterangan}</p>
+                              <p className="text-xs text-red-500/80 font-bold font-mono">{h.tanggal}</p>
+                            </div>
+                            <button 
+                              type="button"
+                              onClick={async () => { 
+                                if (confirm(`Hapus hari libur ${h.keterangan}?`)) {
+                                  toggleLoader(true);
+                                  try {
+                                    await firestoreService.hapusLiburAgenda(h.tanggal);
+                                    triggerSuccess("BERHASIL", "Hari libur berhasil dihapus.");
+                                  } catch (e) {
+                                    alert("Gagal menghapus.");
+                                  } finally {
+                                    toggleLoader(false);
+                                  }
+                                }
+                              }}
+                              className="text-red-400 hover:text-red-600 p-2 cursor-pointer transition-colors"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Logo & Identity Configuration */}     {/* Logo & Identity Configuration */}
                 <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 lg:col-span-2 space-y-8">
                    <div className="flex items-center gap-3 mb-2">
                     <div className="bg-blue-100 p-2 rounded-xl text-blue-600">
@@ -7470,6 +8563,197 @@ export default function App() {
                         </div>
                       </div>
                       <p className="mt-6 text-[10px] text-gray-400 font-medium italic text-center">"Kedisiplinan adalah modal utama meraih cita-cita."</p>
+                    </div>
+
+                    {/* PUSAT NOTIFIKASI ORANG TUA */}
+                    <div className="bg-white rounded-[2.5rem] p-8 border border-gray-100 shadow-xl relative overflow-hidden">
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-amber-50 rounded-bl-[4rem] -z-10" />
+                      
+                      <div className="flex items-center gap-3 mb-6">
+                        <div className="bg-amber-100 p-3 rounded-2xl text-amber-700 animate-pulse">
+                          <Bell size={20} />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-black text-amber-950 uppercase tracking-wider">Notifikasi Orang Tua</h3>
+                          <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Real-Time Tracker</p>
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-gray-500 font-semibold leading-relaxed mb-6">
+                        Dapatkan notifikasi instan langsung di perangkat HP atau Laptop Anda ketika anak Anda terdeteksi melakukan presensi <strong>MASUK</strong> atau <strong>PULANG</strong> di madrasah.
+                      </p>
+
+                      {isInIframe && (
+                        <div className="p-4 bg-amber-50/75 border border-amber-200/60 text-amber-950 rounded-2xl text-xs font-sans mb-5 leading-normal space-y-1">
+                          <p className="font-black text-amber-900 uppercase text-[10px]">⚠️ Anda Sedang di Dalam Preview</p>
+                          <p className="text-[11px] font-medium text-amber-800">
+                            Browser melarang permintaan izin Notifikasi dari dalam frame visual ini.
+                          </p>
+                          <p className="text-[11px] font-bold text-amber-950">
+                            Untuk mengaktifkan Notifikasi Sistem HP, klik tombol <span className="underline">"Open in new tab"</span> di pojok kanan atas preview Anda terlebih dahulu.
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="space-y-4">
+                        {/* Status Izin Notifikasi Browser */}
+                        <div className="p-4 bg-zinc-50 rounded-2xl border border-zinc-100 flex items-center justify-between">
+                          <div>
+                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest leading-none">Izin Browser</p>
+                            <p className="text-xs font-bold text-zinc-800 mt-1 capitalize">
+                              {notifPermission === 'granted' ? 'Diizinkan ✓' : notifPermission === 'denied' ? 'Ditolak ✗' : 'Belum Ditentukan'}
+                            </p>
+                          </div>
+                          {notifPermission !== 'granted' ? (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (typeof window === 'undefined' || !('Notification' in window)) {
+                                  alert("Browser Anda tidak mendukung Web Notifications.");
+                                  return;
+                                }
+                                try {
+                                  const permission = await Notification.requestPermission();
+                                  setNotifPermission(permission);
+                                  if (permission === 'granted') {
+                                    setParentNotifEnabled(true);
+                                    localStorage.setItem('parent_notif_enabled', 'true');
+                                    triggerSuccess("NOTIFIKASI AKTIF", "Selamat! Notifikasi kehadiran berhasil diaktifkan.");
+                                    try {
+                                      new Notification("🔔 Notifikasi Orang Tua Aktif", {
+                                        body: "SIGAP: Anda sekarang akan menerima update kehadiran real-time di perangkat ini.",
+                                        icon: appConfig.logoUrl || '/favicon.ico',
+                                      });
+                                    } catch (e) {
+                                      console.error(e);
+                                    }
+                                  } else {
+                                    alert(`Izin notifikasi ditolak/tidak diberikan (${permission}). Silakan periksa pengaturan situs di browser Anda.`);
+                                  }
+                                } catch (err) {
+                                  console.warn("Notification.requestPermission failed:", err);
+                                  // Fallback handling for iframe block
+                                  alert(
+                                    "Permintaan izin diblokir karena dijalankan dalam preview frame.\n\n" +
+                                    "Silakan klik tombol 'Open in new tab' di pojok kanan atas preview untuk membuka SIGAP secara penuh, " +
+                                    "lalu klik kembali 'Izinkan' untuk mengaktifkannya secara resmi.\n\n" +
+                                    "Namun, kami telah mengaktifkan simulasi notifikasi di dalam aplikasi (In-App Toast Alerts) untuk memfasilitasi pengetesan Anda!"
+                                  );
+                                  setParentNotifEnabled(true);
+                                  localStorage.setItem('parent_notif_enabled', 'true');
+                                  triggerSuccess("SIMULASI DIAKTIFKAN", "Status aktif secara simulasi (In-App Toast notifications).");
+                                }
+                              }}
+                              className="bg-amber-600 hover:bg-amber-700 text-white font-black uppercase text-[9px] tracking-wider px-3.5 py-2 rounded-xl transition-all shadow-sm active:scale-95 cursor-pointer"
+                            >
+                              Izinkan
+                            </button>
+                          ) : (
+                            <span className="bg-green-100 text-green-700 border border-green-200 font-bold uppercase text-[9px] px-2.5 py-1 rounded-lg font-sans">
+                              Aktif
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Toggle Notifikasi Kehadiran */}
+                        <div className="p-4 bg-zinc-50 rounded-2xl border border-zinc-100 flex items-center justify-between">
+                          <div>
+                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest leading-none">Status Notifikasi</p>
+                            <p className="text-xs font-bold text-zinc-800 mt-1">
+                              {parentNotifEnabled ? "Aktif & Siaga 🔔" : "Nonaktif 🔕"}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const nextVal = !parentNotifEnabled;
+                              setParentNotifEnabled(nextVal);
+                              localStorage.setItem('parent_notif_enabled', nextVal ? 'true' : 'false');
+                              
+                              if (nextVal) {
+                                if (typeof window !== 'undefined' && 'Notification' in window) {
+                                  try {
+                                    const p = await Notification.requestPermission();
+                                    setNotifPermission(p);
+                                    if (p !== 'granted') {
+                                      triggerSuccess(
+                                        "MODE IN-APP AKTIF", 
+                                        "Status aktif. Notifikasi akan dimunculkan di dalam aplikasi karena izin sistem diblokir/ditolak."
+                                      );
+                                    } else {
+                                      triggerSuccess(
+                                        "NOTIFIKASI AKTIF",
+                                        "Anda akan menerima notifikasi otomatis ketika anak Anda melakukan presensi."
+                                      );
+                                    }
+                                  } catch (err) {
+                                    console.warn("Request failed in toggle:", err);
+                                    triggerSuccess(
+                                      "MODE IN-APP AKTIF", 
+                                      "Status sistem aktif. Notifikasi akan muncul sebagai notifikasi langsung di layar aplikasi."
+                                    );
+                                  }
+                                } else {
+                                  triggerSuccess(
+                                    "MODE IN-APP AKTIF", 
+                                    "Status sistem aktif. Perangkat Anda tidak mendukung notifikasi sistem, menggunakan mode dalam aplikasi."
+                                  );
+                                }
+                              } else {
+                                triggerSuccess(
+                                  "NOTIFIKASI DIMATIKAN",
+                                  "Notifikasi kehadiran telah dinonaktifkan."
+                                );
+                              }
+                            }}
+                            className={`w-12 h-6 rounded-full transition-colors relative cursor-pointer ${
+                              parentNotifEnabled ? 'bg-amber-600' : 'bg-zinc-300'
+                            }`}
+                          >
+                            <span className={`absolute top-1 left-1 bg-white w-4 h-4 rounded-full transition-transform ${
+                              parentNotifEnabled ? 'translate-x-6' : 'translate-x-0'
+                            }`} />
+                          </button>
+                        </div>
+
+                        {/* Test Notification and Guidance Row */}
+                        <div className="pt-2 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (typeof window === 'undefined') return;
+                              
+                              const hasNativePermission = 'Notification' in window && Notification.permission === "granted";
+                              if (!hasNativePermission) {
+                                // Fallback to test with in-app notification directly
+                                triggerSuccess(
+                                  "📍 TEST PRESENSI (IN-APP)",
+                                  "SIGAP: Test update berhasil dikirim di layar ini."
+                                );
+                              } else {
+                                triggerParentNotification(
+                                  "🔔 SIGAP: Tes Koneksi",
+                                  `Ini adalah contoh notifikasi kehadiran dari aplikasi SIGAP Madrasah.`
+                                );
+                              }
+                            }}
+                            className="flex-1 bg-zinc-100 hover:bg-zinc-200 text-zinc-800 border border-zinc-200/60 font-black uppercase text-[9px] tracking-wider py-2.5 rounded-xl transition-all shadow-sm cursor-pointer text-center"
+                          >
+                            Uji Notifikasi
+                          </button>
+                        </div>
+
+                        <div className="p-3 bg-amber-50/50 rounded-2xl border border-amber-100/60 text-amber-950 font-sans mt-3">
+                          <p className="text-[10px] font-black uppercase text-amber-900 mb-1">💡 Tips Latar Belakang (Penting)</p>
+                          <p className="text-[9px] text-amber-800 leading-normal font-medium">
+                            Agar notifikasi tetap masuk saat HP terkunci atau sedang membuka aplikasi lain:
+                            <br />
+                            1. Biarkan tab SIGAP tetap terbuka di browser latar belakang Anda.
+                            <br />
+                            2. Pastikan izin notifikasi browser HP Anda dalam posisi "Izinkan" dan set hemat baterai ke "Tanpa Batasan" jika didukung.
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   </div>
 

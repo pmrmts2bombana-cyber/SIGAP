@@ -13,7 +13,8 @@ import {
   onSnapshot,
   Timestamp,
   addDoc,
-  deleteField
+  deleteField,
+  getCountFromServer
 } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { 
@@ -146,6 +147,7 @@ export const firestoreService = {
     try {
       const id = data.id || `${data.nisn}-${data.tanggal}`;
       await setDoc(doc(db, 'attendance', id), { ...data, id });
+      await firestoreService.updateRekapSiswa(data.tanggal);
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `attendance/${data.id}`);
       throw e;
@@ -155,6 +157,9 @@ export const firestoreService = {
   updateAbsensiStatus: async (id: string, status: string, ket?: string) => {
     try {
       await updateDoc(doc(db, 'attendance', id), { status, keterangan: ket || '' });
+      const parts = id.split('-');
+      const tanggal = parts.slice(parts.length - 3).join('-');
+      await firestoreService.updateRekapSiswa(tanggal);
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `attendance/${id}`);
       throw e;
@@ -164,6 +169,9 @@ export const firestoreService = {
   hapusAbsensi: async (id: string) => {
     try {
       await deleteDoc(doc(db, 'attendance', id));
+      const parts = id.split('-');
+      const tanggal = parts.slice(parts.length - 3).join('-');
+      await firestoreService.updateRekapSiswa(tanggal);
     } catch (e) {
       handleFirestoreError(e, OperationType.DELETE, `attendance/${id}`);
       throw e;
@@ -284,6 +292,7 @@ export const firestoreService = {
           keterangan: 'Absensi gagal sudah jam pulang'
         };
         await setDoc(doc(db, 'attendance', id), record);
+        await firestoreService.updateRekapSiswa(tanggal);
         return { 
           success: false, 
           status: 'Alfa',
@@ -316,6 +325,7 @@ export const firestoreService = {
       };
 
       await setDoc(doc(db, 'attendance', id), record);
+      await firestoreService.updateRekapSiswa(tanggal);
       const lateMsg = terlambat > 0 ? ` (Terlambat ${formatLateDescription(terlambat)})` : ' (Tepat Waktu)';
       return { 
         success: true, 
@@ -468,7 +478,7 @@ export const firestoreService = {
     }
   },
 
-  savePengaturanHari: async (hari: string, masuk: string, pulang: string, activeJps?: number[], reasonInactive?: string, targetDate?: string) => {
+  savePengaturanHari: async (hari: string, masuk: string, pulang: string, activeJps?: number[], reasonInactive?: string, targetDate?: string, jpTimes?: any) => {
     try {
       const updateData: any = { hari, masuk, pulang };
       if (activeJps !== undefined) {
@@ -479,6 +489,9 @@ export const firestoreService = {
       }
       if (targetDate !== undefined) {
         updateData.targetDate = targetDate;
+      }
+      if (jpTimes !== undefined) {
+        updateData.jpTimes = jpTimes;
       }
       await setDoc(doc(db, 'settings', hari), updateData, { merge: true });
     } catch (e) {
@@ -554,6 +567,73 @@ export const firestoreService = {
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, 'oneTimeTokens');
       throw e;
+    }
+  },
+
+  updateRekapSiswa: async (tanggal: string) => {
+    try {
+      // 1. Get total students count
+      const totalSiswaSnap = await getCountFromServer(query(collection(db, 'students')));
+      const siswaCount = totalSiswaSnap.data().count;
+
+      // 2. Get total boys/girls count
+      const siswaLSnap = await getCountFromServer(query(collection(db, 'students'), where('jenisKelamin', 'in', ['L', 'Laki-Laki'])));
+      const siswaL = siswaLSnap.data().count;
+      const siswaP = siswaCount - siswaL;
+
+      // 3. Get total teachers count
+      const totalGuruSnap = await getCountFromServer(query(collection(db, 'teachers')));
+      const guruCount = totalGuruSnap.data().count;
+
+      // 4. Get attendance check-ins count
+      const hadirSnap = await getCountFromServer(query(collection(db, 'attendance'), where('tanggal', '==', tanggal), where('status', '==', 'Hadir')));
+      const hadirCount = hadirSnap.data().count;
+
+      const terlambatSnap = await getCountFromServer(query(collection(db, 'attendance'), where('tanggal', '==', tanggal), where('status', '==', 'Hadir'), where('terlambat', '>', 0)));
+      const terlambatCount = terlambatSnap.data().count;
+
+      const sakitSnap = await getCountFromServer(query(collection(db, 'attendance'), where('tanggal', '==', tanggal), where('status', '==', 'Sakit')));
+      const sakitCount = sakitSnap.data().count;
+
+      const izinSnap = await getCountFromServer(query(collection(db, 'attendance'), where('tanggal', '==', tanggal), where('status', '==', 'Izin')));
+      const izinCount = izinSnap.data().count;
+
+      const alfaSnap = await getCountFromServer(query(collection(db, 'attendance'), where('tanggal', '==', tanggal), where('status', '==', 'Alfa')));
+      const recordedAlfa = alfaSnap.data().count;
+
+      // Calculate how many students haven't checked in yet today (not in Hadir, Sakit, Izin, Alfa)
+      const allAttendedSnap = await getCountFromServer(query(collection(db, 'attendance'), where('tanggal', '==', tanggal)));
+      const attendedCount = allAttendedSnap.data().count;
+      const notYetCheckedIn = siswaCount - attendedCount;
+
+      // Check if it's holiday
+      const holidayDoc = await getDoc(doc(db, 'holidays', tanggal));
+      const dayMap = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+      const parts = tanggal.split('-').map(Number);
+      const dDate = new Date(parts[0], parts[1] - 1, parts[2]);
+      const dayName = dayMap[dDate.getDay()];
+      const isHoliday = holidayDoc.exists() || dayName === 'Minggu';
+
+      const alfaCount = isHoliday ? 0 : (recordedAlfa + notYetCheckedIn);
+
+      const summary = {
+        tanggal,
+        siswaCount,
+        siswaL,
+        siswaP,
+        guruCount,
+        hadirCount,
+        terlambatCount,
+        sakitCount,
+        izinCount,
+        alfaCount,
+        lastUpdated: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      };
+
+      await setDoc(doc(db, 'rekapSiswa', tanggal), summary);
+      return summary;
+    } catch (e) {
+      console.error("Error updating rekapSiswa for date:", tanggal, e);
     }
   },
 
