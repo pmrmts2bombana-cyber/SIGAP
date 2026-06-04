@@ -16,7 +16,7 @@ import {
   deleteField,
   getCountFromServer
 } from 'firebase/firestore';
-import { db, auth } from '../firebase';
+import { db, auth, defaultDb } from '../firebase';
 import { 
   Student, Teacher, Classroom, Attendance, TeacherAttendance, 
   DashboardStats, Holiday, DaySetting, UserSession, Role, TeachingSchedule 
@@ -353,6 +353,28 @@ export const firestoreService = {
 
       // Check for holiday
       const tanggal = now.toISOString().split('T')[0];
+
+      // Block scanning if teacher has active leave status (Izin/Sakit/Alfa) for today
+      try {
+        const leaveQuery = query(
+          collection(db, 'teacherAttendance'),
+          where('nip', '==', nip),
+          where('tanggal', '==', tanggal)
+        );
+        const leaveSnap = await getDocs(leaveQuery);
+        const activeLeave = leaveSnap.docs.find(d => {
+          const data = d.data();
+          return data.status === 'Izin' || data.status === 'Sakit' || data.status === 'Alfa';
+        });
+
+        if (activeLeave) {
+          const leaveStat = activeLeave.data().status;
+          return { success: false, message: `Gagal Scan: Anda berstatus ${leaveStat} hari ini.` };
+        }
+      } catch (leaveErr) {
+        console.error("Error reading leave status: ", leaveErr);
+      }
+
       const holidayDoc = await getDoc(doc(db, 'holidays', tanggal));
       if (holidayDoc.exists()) {
         const holidayData = holidayDoc.data() as Holiday;
@@ -417,6 +439,15 @@ export const firestoreService = {
       return { success: true, message: `Berhasil Scan Kelas: ${className}` };
     } catch (e) {
       return handleFirestoreError(e, OperationType.WRITE, 'class-scan');
+    }
+  },
+
+  saveTeacherAttendanceManual: async (record: any) => {
+    try {
+      await setDoc(doc(db, 'teacherAttendance', record.id), record);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `teacherAttendance/${record.id}`);
+      throw e;
     }
   },
 
@@ -549,19 +580,49 @@ export const firestoreService = {
       window.crypto.getRandomValues(array);
       const token = Array.from(array, dec => dec.toString(16).padStart(8, '0')).join('');
 
-      const tokenRef = doc(db, 'oneTimeTokens', token);
       const now = Date.now();
-      const expiresAt = now + 60 * 1000; // Token valid for 60 seconds (1 minute)
+      const expiresAt = now + 10 * 60 * 1000; // Token valid for 10 minutes (prevents clock drift / timezone / cold start failures)
 
-      await setDoc(tokenRef, {
+      // Create token payload containing both number and Timestamp instances for full consumer compatibility
+      const tokenData = {
         token,
         uid: session.uid,
         name: session.name || '',
         role: session.role || 'Guru',
         createdAt: now,
         expiresAt,
+        createdAtMillis: now,
+        expiresAtMillis: expiresAt,
+        createdAtTimestamp: Timestamp.fromMillis(now),
+        expiresAtTimestamp: Timestamp.fromMillis(expiresAt),
         used: false
-      });
+      };
+
+      // 1. Prepare parallel write promises for the active database and default database
+      const writePromises: Promise<any>[] = [];
+      const tokenRef = doc(db, 'oneTimeTokens', token);
+      writePromises.push(setDoc(tokenRef, tokenData));
+
+      // 2. Also write token to the standard default database (to support external Vercel apps like KBC & Roster that read default database)
+      if (defaultDb && defaultDb !== db) {
+        const defaultTokenRef = doc(defaultDb, 'oneTimeTokens', token);
+        writePromises.push(
+          setDoc(defaultTokenRef, tokenData).catch(err => {
+            console.warn("[WARNING] Ignored error syncing token to default database:", err);
+          })
+        );
+      }
+
+      // Wait for the server to acknowledge the writes so they are fully persisted on the Firestore server
+      // before the new tab navigates to the external app. This guarantees that "Akses ditolak: Token tidak valid"
+      // does not occur on cold loads. We allow up to 3000ms, which is extremely generous for a standard 
+      // Firestore write (typically 300ms - 800ms) but avoids blocking the user indefinitely on slow networks.
+      await Promise.race([
+        Promise.all(writePromises),
+        new Promise(resolve => setTimeout(resolve, 3000))
+      ]);
+
+      console.log("[DEBUG] OneTimeToken synced successfully to servers");
 
       return token;
     } catch (e) {

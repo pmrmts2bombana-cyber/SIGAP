@@ -179,6 +179,111 @@ const getEffectiveTargetSessionsForSchedule = (sch: TeachingSchedule, year: numb
   return totalSessions;
 };
 
+const calculateTeacherMonthlyStats = (
+  nip: string,
+  bulan: string, // YYYY-MM
+  kelasFilter: string,
+  teachingSchedules: TeachingSchedule[],
+  holidays: Holiday[],
+  settings: DaySetting[],
+  teacherAttendance: TeacherAttendance[]
+) => {
+  const [y, m] = bulan.split('-').map(Number);
+  const now = new Date();
+  const isCurrentMonth = (now.getFullYear() === y && (now.getMonth() + 1) === m);
+  const isFutureMonth = (y > now.getFullYear() || (y === now.getFullYear() && m > (now.getMonth() + 1)));
+  const lastDayOfMonth = new Date(y, m, 0).getDate();
+
+  let totalTarget = 0;
+  let hadir = 0;
+  let sakit = 0;
+  let izin = 0;
+  let alfa = 0;
+  let totalLambat = 0;
+
+  const dayRecords = (teacherAttendance || []).filter(ta => ta.nip === nip && ta.tanggal.startsWith(bulan));
+
+  for (let d = 1; d <= lastDayOfMonth; d++) {
+    const dateStr = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const currentDate = new Date(y, m - 1, d);
+    const dayName = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"][currentDate.getDay()];
+    
+    if (dayName === "Minggu") continue;
+
+    const isHoliday = (holidays || []).some(h => h.tanggal === dateStr);
+    if (isHoliday) continue;
+
+    const daySett = (settings || []).find(s => s.hari === dayName);
+    const limitJp = dayName === 'Jumat' ? 6 : 8;
+    const defaultJps = Array.from({ length: limitJp }, (_, i) => i + 1);
+    let activeJps = defaultJps;
+    if (daySett) {
+      if (!daySett.targetDate || daySett.targetDate === dateStr) {
+        activeJps = Array.isArray(daySett.activeJps) ? daySett.activeJps : defaultJps;
+      }
+    }
+
+    // Find schedules for this teacher today
+    const schedules = (teachingSchedules || []).filter(ts => 
+      ts.nip === nip && 
+      ts.hari === dayName && 
+      (kelasFilter ? ts.kelas === kelasFilter : true)
+    );
+
+    for (const sch of schedules) {
+      const schJps = sch.jps || [];
+      let activeSchJpCount = 0;
+      if (schJps.length > 0) {
+        activeSchJpCount = schJps.filter(j => activeJps.includes(j)).length;
+      } else {
+        const scale = activeJps.length / limitJp;
+        activeSchJpCount = Math.round(scale * (Number(sch.targetPertemuan) || 0));
+      }
+
+      if (activeSchJpCount > 0) {
+        totalTarget += activeSchJpCount;
+
+        const isPastOrToday = !isFutureMonth && (!isCurrentMonth || d <= now.getDate());
+        if (isPastOrToday) {
+          // Check if scanned today
+          const scans = dayRecords.filter(ta => 
+            ta.tanggal === dateStr && 
+            (!ta.status || ta.status === 'Hadir') && 
+            ta.kelas === sch.kelas
+          );
+
+          const isSakit = dayRecords.some(ta => ta.status === 'Sakit' && ta.tanggal === dateStr && (ta.kelas === sch.kelas || ta.kelas === '-'));
+          const isIzin = dayRecords.some(ta => ta.status === 'Izin' && ta.tanggal === dateStr && (ta.kelas === sch.kelas || ta.kelas === '-'));
+
+          if (scans.length > 0) {
+            hadir += activeSchJpCount;
+            const lateVal = scans.reduce((sum, s) => sum + (s.terlambat || 0), 0);
+            totalLambat += lateVal;
+          } else if (isSakit) {
+            sakit += activeSchJpCount;
+          } else if (isIzin) {
+            izin += activeSchJpCount;
+          } else {
+            alfa += activeSchJpCount;
+          }
+        }
+      }
+    }
+  }
+
+  const perc = totalTarget > 0 ? Math.round((hadir / totalTarget) * 100) : 0;
+
+  return {
+    totalTarget,
+    hadir,
+    sakit,
+    izin,
+    alfa,
+    totalLambat,
+    perc
+  };
+};
+
 const getEffectiveDays = (year: number, month: number, holidays: Holiday[], settings: DaySetting[], upToDay?: number) => {
   const dayNames = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
   const days: string[] = [];
@@ -261,6 +366,17 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState("");
   const [expandedKamadTeacherDetails, setExpandedKamadTeacherDetails] = useState<{[nip: string]: boolean}>({});
   const [expandedJadwal, setExpandedJadwal] = useState<string[]>([]);
+
+  // States for Input Kehadiran Guru manual
+  const [manT_nip, setManT_nip] = useState('');
+  const [manT_status, setManT_status] = useState<'Sakit' | 'Izin'>('Sakit');
+  const [manT_mode, setManT_mode] = useState<'single' | 'range'>('single');
+  const [manT_date, setManT_date] = useState('');
+  const [manT_startDate, setManT_startDate] = useState('');
+  const [manT_endDate, setManT_endDate] = useState('');
+  const [manT_keterangan, setManT_keterangan] = useState('');
+  const [manT_saving, setManT_saving] = useState(false);
+  const [manT_searchTerm, setManT_searchTerm] = useState('');
 
   useEffect(() => {
     const updateTime = () => {
@@ -537,6 +653,10 @@ export default function App() {
   const [filterAdminSiswaClass, setFilterAdminSiswaClass] = useState('');
   const [filterJadwalClass, setFilterJadwalClass] = useState('');
   const [siswaDashboardDate, setSiswaDashboardDate] = useState(new Date().toISOString().split('T')[0]);
+  const [waliFilterTanggal, setWaliFilterTanggal] = useState(new Date().toISOString().split('T')[0]);
+  const [waliFilterNama, setWaliFilterNama] = useState('');
+  const [waliFilterStatus, setWaliFilterStatus] = useState('');
+  const [waliPagination, setWaliPagination] = useState(0);
 
   const [pagination, setPagination] = useState({
     guru: 0,
@@ -569,6 +689,10 @@ export default function App() {
     mapel: '',
     kelas: ''
   });
+
+  useEffect(() => {
+    setPagination(p => ({ ...p, rekapMapel: 0 }));
+  }, [rekapMapelFilter.nip, rekapMapelFilter.bulan, rekapMapelFilter.mapel, rekapMapelFilter.kelas, pageSize]);
 
   const [confirmModal, setConfirmModal] = useState<{ show: boolean, title: string, message: string, entityName?: string, onConfirm: () => void } | null>(null);
   const [resetAbsensiTarget, setResetAbsensiTarget] = useState<'Siswa' | 'Guru' | null>(null);
@@ -806,7 +930,6 @@ export default function App() {
         unsubTeacherAttendance = onSnapshot(
           query(
             collection(db, 'teacherAttendance'),
-            where('nip', '==', uid),
             where('tanggal', '>=', dateLimit)
           ),
           (snap) => {
@@ -815,24 +938,14 @@ export default function App() {
           (error) => handleFirestoreError(error, OperationType.GET, 'teacherAttendance')
         );
 
-        unsubSchedules = onSnapshot(
-          query(
-            collection(db, 'teachingSchedules'),
-            where('nip', '==', uid)
-          ),
-          (snap) => {
-            setTeachingSchedules(snap.docs.map(d => d.data() as TeachingSchedule));
-          },
-          (error) => handleFirestoreError(error, OperationType.GET, 'teachingSchedules')
-        );
+        unsubSchedules = onSnapshot(collection(db, 'teachingSchedules'), (snap) => {
+          setTeachingSchedules(snap.docs.map(d => d.data() as TeachingSchedule));
+        }, (error) => handleFirestoreError(error, OperationType.GET, 'teachingSchedules'));
 
-        unsubTeachers = onSnapshot(doc(db, 'teachers', uid), (snap) => {
-          if (snap.exists()) {
-            setTeachers([{ nip: snap.id, ...snap.data() } as Teacher]);
-          } else {
-            setTeachers([]);
-          }
-        }, (error) => handleFirestoreError(error, OperationType.GET, `teachers/${uid}`));
+        unsubTeachers = onSnapshot(collection(db, 'teachers'), (snap) => {
+          const data = snap.docs.map(d => ({ nip: d.id, ...d.data() } as Teacher));
+          setTeachers(data.sort((a, b) => a.nama.localeCompare(b.nama)));
+        }, (error) => handleFirestoreError(error, OperationType.GET, 'teachers'));
 
         unsubClassrooms = onSnapshot(collection(db, 'classrooms'), (snap) => {
           const data = snap.docs.map(d => d.data() as Classroom);
@@ -1088,16 +1201,75 @@ export default function App() {
 
 
   const handleOpenRoster = async () => {
+    // Open a blank new window synchronously first to bypass browser popup blockers
+    const newWindow = window.open('about:blank', '_blank');
+    if (newWindow) {
+      newWindow.document.write(`
+        <html>
+          <head>
+            <title>Menghubungkan ke Roster...</title>
+            <style>
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+                background-color: #0c0a09;
+                color: #f5f5f4;
+              }
+              .spinner {
+                border: 4px solid rgba(255, 255, 255, 0.1);
+                border-left-color: #22c55e;
+                border-radius: 50%;
+                width: 40px;
+                height: 40px;
+                animation: spin 1s linear infinite;
+                margin-bottom: 20px;
+              }
+              @keyframes spin {
+                to { transform: rotate(360deg); }
+              }
+              h1 {
+                font-size: 18px;
+                font-weight: 700;
+                margin: 0 0 8px 0;
+              }
+              p {
+                font-size: 13px;
+                color: #a8a29e;
+                margin: 0;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="spinner"></div>
+            <h1>Menghubungkan ke SIGAP Roster</h1>
+            <p>Mohon tunggu sebentar, sedang menyinkronkan token keamanan...</p>
+          </body>
+        </html>
+      `);
+    }
+
     toggleLoader(true);
     try {
       const token = await firestoreService.generateOneTimeToken(session);
       const url = `https://criet-roster.vercel.app/?token=${token}&role=${session?.role || 'Guru'}&name=${encodeURIComponent(session?.name || 'User')}&ott=${token}&ts=${Date.now()}`;
-      const newWindow = window.open(url, '_blank', 'noopener,noreferrer');
-      if (!newWindow) {
-        alert("Pop-up diblokir! Silakan izinkan pop-up di browser Anda agar dapat membuka aplikasi Roster.");
+      if (newWindow) {
+        newWindow.location.href = url;
+      } else {
+        const opened = window.open(url, '_blank', 'noopener,noreferrer');
+        if (!opened) {
+          alert("Pop-up diblokir! Silakan izinkan pop-up di browser Anda agar dapat membuka aplikasi Roster.");
+        }
       }
     } catch (err) {
       console.error(err);
+      if (newWindow) {
+        newWindow.close();
+      }
       alert("Gagal membuat token login sekali pakai.");
     } finally {
       toggleLoader(false);
@@ -1158,16 +1330,75 @@ export default function App() {
   };
 
   const handleOpenKBC = async () => {
+    // Open a blank new window synchronously first to bypass browser popup blockers
+    const newWindow = window.open('about:blank', '_blank');
+    if (newWindow) {
+      newWindow.document.write(`
+        <html>
+          <head>
+            <title>Menghubungkan ke KBC...</title>
+            <style>
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+                background-color: #0c0a09;
+                color: #f5f5f4;
+              }
+              .spinner {
+                border: 4px solid rgba(255, 255, 255, 0.1);
+                border-left-color: #e11d48;
+                border-radius: 50%;
+                width: 40px;
+                height: 40px;
+                animation: spin 1s linear infinite;
+                margin-bottom: 20px;
+              }
+              @keyframes spin {
+                to { transform: rotate(360deg); }
+              }
+              h1 {
+                font-size: 18px;
+                font-weight: 700;
+                margin: 0 0 8px 0;
+              }
+              p {
+                font-size: 13px;
+                color: #a8a29e;
+                margin: 0;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="spinner"></div>
+            <h1>Menghubungkan ke SIGAP KBC</h1>
+            <p>Mohon tunggu sebentar, sedang menyinkronkan token keamanan...</p>
+          </body>
+        </html>
+      `);
+    }
+
     toggleLoader(true);
     try {
       const token = await firestoreService.generateOneTimeToken(session);
       const url = `https://kbc-mtsn2bombana.vercel.app/?token=${token}&role=${session?.role || 'Guru'}&name=${encodeURIComponent(session?.name || 'User')}&ott=${token}&ts=${Date.now()}`;
-      const newWindow = window.open(url, '_blank', 'noopener,noreferrer');
-      if (!newWindow) {
-        alert("Pop-up diblokir! Silakan izinkan pop-up di browser Anda agar dapat membuka aplikasi KBC.");
+      if (newWindow) {
+        newWindow.location.href = url;
+      } else {
+        const opened = window.open(url, '_blank', 'noopener,noreferrer');
+        if (!opened) {
+          alert("Pop-up diblokir! Silakan izinkan pop-up di browser Anda agar dapat membuka aplikasi KBC.");
+        }
       }
     } catch (err) {
       console.error(err);
+      if (newWindow) {
+        newWindow.close();
+      }
       alert("Gagal membuat token login sekali pakai.");
     } finally {
       toggleLoader(false);
@@ -1282,6 +1513,7 @@ export default function App() {
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {teachers
+                .filter(t => t.nip !== 'ADMIN001' && t.role !== 'Admin')
                 .filter(t => t.nama.toLowerCase().includes(searchTeacherReport.toLowerCase()))
                 .map((t) => (
                 <button
@@ -1440,6 +1672,372 @@ export default function App() {
             </div>
           </motion.div>
         )}
+      </div>
+    );
+  };
+
+  const getIndonesianDayName = (dateStr: string) => {
+    const d = new Date(dateStr);
+    const days = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+    return days[d.getDay()];
+  };
+
+  const getDatesInRange = (startDate: string, endDate: string) => {
+    const dates = [];
+    let curr = new Date(startDate);
+    const end = new Date(endDate);
+    while (curr <= end) {
+      dates.push(curr.toISOString().split('T')[0]);
+      curr.setDate(curr.getDate() + 1);
+    }
+    return dates;
+  };
+
+  const submitManualTeacherAttendance = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manT_nip) {
+      alert("Pilih guru terlebih dahulu.");
+      return;
+    }
+    const targetTeacher = teachers.find(t => t.nip === manT_nip);
+    if (!targetTeacher) {
+      alert("Guru tidak ditemukan.");
+      return;
+    }
+
+    let datesToRecord: string[] = [];
+    if (manT_mode === 'single') {
+      if (!manT_date) {
+        alert("Pilih tanggal terlebih dahulu.");
+        return;
+      }
+      datesToRecord = [manT_date];
+    } else {
+      if (!manT_startDate || !manT_endDate) {
+        alert("Pilih rentang tanggal lengkap.");
+        return;
+      }
+      if (manT_startDate > manT_endDate) {
+        alert("Tanggal mulai tidak boleh melebihi tanggal selesai.");
+        return;
+      }
+      datesToRecord = getDatesInRange(manT_startDate, manT_endDate);
+    }
+
+    if (!manT_keterangan.trim()) {
+      alert("Isi keterangan izin/sakit terlebih dahulu.");
+      return;
+    }
+
+    setManT_saving(true);
+    toggleLoader(true);
+
+    try {
+      let savedCount = 0;
+      for (const tanggal of datesToRecord) {
+        const indonesianDay = getIndonesianDayName(tanggal);
+        const matchingSchedules = teachingSchedules.filter(
+          s => s.nip === manT_nip && s.hari === indonesianDay
+        );
+
+        if (matchingSchedules.length > 0) {
+          for (const s of matchingSchedules) {
+            const record = {
+              id: `${manT_nip}-${s.kelas}-${tanggal}`,
+              nip: manT_nip,
+              nama: targetTeacher.nama,
+              kelas: s.kelas,
+              mapel: s.mapel || '-',
+              tanggal,
+              jam: '-',
+              terlambat: 0,
+              status: manT_status,
+              keterangan: manT_keterangan
+            };
+            await firestoreService.saveTeacherAttendanceManual(record);
+            savedCount++;
+          }
+        } else {
+          const record = {
+            id: `${manT_nip}-general-${tanggal}`,
+            nip: manT_nip,
+            nama: targetTeacher.nama,
+            kelas: '-',
+            mapel: '-',
+            tanggal,
+            jam: '-',
+            terlambat: 0,
+            status: manT_status,
+            keterangan: manT_keterangan
+          };
+          await firestoreService.saveTeacherAttendanceManual(record);
+          savedCount++;
+        }
+      }
+
+      triggerSuccess("BERHASIL", `Sukses menyimpan ${savedCount} rekaman presensi manual untuk ${targetTeacher.nama}.`);
+      setManT_nip('');
+      setManT_date('');
+      setManT_startDate('');
+      setManT_endDate('');
+      setManT_keterangan('');
+    } catch (err) {
+      console.error(err);
+      alert("Terjadi kesalahan saat menyimpan.");
+    } finally {
+      setManT_saving(false);
+      toggleLoader(false);
+    }
+  };
+
+  const renderInputKehadiranGuru = () => {
+    const manualEntries = teacherAttendance
+      .filter(ta => ta.status && ['Sakit', 'Izin', 'Alfa', 'Alpa'].includes(ta.status))
+      .sort((a, b) => b.tanggal.localeCompare(a.tanggal));
+
+    const totalKeteranganCount = manualEntries.length;
+    const activeTeachers = teachers.filter(t => t.jabatan !== 'Kamad' && t.nip !== 'ADMIN001' && t.role !== 'Admin');
+
+    return (
+      <div className="space-y-6 max-w-7xl mx-auto px-4 md:px-0">
+        <div className="flex flex-col">
+          <h2 className="text-xl font-bold flex items-center gap-2 text-zinc-900">
+            <CalendarRange size={24} className="text-green-700" /> Input Kehadiran Guru
+          </h2>
+          <p className="text-xs text-zinc-400 font-semibold">Form khusus Kamad untuk mencatat izin, sakit, dan ketidakhadiran guru secara manual</p>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-12 xl:col-span-5 bg-white p-6 rounded-3xl border border-gray-100 shadow-sm space-y-6">
+            <h3 className="text-sm font-black text-gray-800 uppercase tracking-wider mb-4 border-b border-gray-50 pb-2">Form Presensi Manual</h3>
+            <form onSubmit={submitManualTeacherAttendance} className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Pilih Guru</label>
+                <select
+                  value={manT_nip}
+                  onChange={e => setManT_nip(e.target.value)}
+                  className="w-full bg-gray-50 border-0 rounded-xl px-4 py-3 text-sm font-semibold text-zinc-800 focus:ring-2 focus:ring-green-600 transition-all cursor-pointer"
+                  required
+                >
+                  <option value="">-- Pilih Guru --</option>
+                  {activeTeachers.map(t => (
+                    <option key={t.nip} value={t.nip}>{t.nama}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Pilih Status Kehadiran</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setManT_status('Sakit')}
+                    className={`p-3 rounded-xl border text-center transition-all cursor-pointer ${
+                      manT_status === 'Sakit'
+                        ? 'border-orange-500 bg-orange-50/50 text-orange-700 font-extrabold ring-2 ring-orange-100'
+                        : 'border-gray-100 bg-gray-50 hover:bg-gray-100 text-gray-500 text-xs font-semibold'
+                    }`}
+                  >
+                    Sakit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setManT_status('Izin')}
+                    className={`p-3 rounded-xl border text-center transition-all cursor-pointer ${
+                      manT_status === 'Izin'
+                        ? 'border-amber-500 bg-amber-50/50 text-amber-700 font-extrabold ring-2 ring-amber-100'
+                        : 'border-gray-100 bg-gray-50 hover:bg-gray-100 text-gray-500 text-xs font-semibold'
+                    }`}
+                  >
+                    Izin
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Metode Penginputan Tanggal</label>
+                <div className="flex gap-2 p-1 bg-gray-100 rounded-xl w-full">
+                  <button
+                    type="button"
+                    onClick={() => setManT_mode('single')}
+                    className={`flex-1 py-1.5 text-xs font-black rounded-lg transition-all uppercase tracking-wider ${
+                      manT_mode === 'single' ? 'bg-green-800 text-white shadow' : 'text-gray-400 font-bold'
+                    }`}
+                  >
+                    Satu Hari
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setManT_mode('range')}
+                    className={`flex-1 py-1.5 text-xs font-black rounded-lg transition-all uppercase tracking-wider ${
+                      manT_mode === 'range' ? 'bg-green-800 text-white shadow' : 'text-gray-400 font-bold'
+                    }`}
+                  >
+                    Rentang Tanggal
+                  </button>
+                </div>
+              </div>
+
+              {manT_mode === 'single' ? (
+                <div>
+                  <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Tanggal</label>
+                  <input
+                    type="date"
+                    value={manT_date}
+                    onChange={e => setManT_date(e.target.value)}
+                    className="w-full bg-gray-50 border-0 rounded-xl px-4 py-3 text-sm font-semibold text-zinc-800 focus:ring-2 focus:ring-green-600 transition-all cursor-pointer"
+                    required={manT_mode === 'single'}
+                  />
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Mulai</label>
+                    <input
+                      type="date"
+                      value={manT_startDate}
+                      onChange={e => setManT_startDate(e.target.value)}
+                      className="w-full bg-gray-50 border-0 rounded-xl px-3 py-3 text-xs font-semibold text-zinc-800 focus:ring-2 focus:ring-green-600 transition-all cursor-pointer"
+                      required={manT_mode === 'range'}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Selesai</label>
+                    <input
+                      type="date"
+                      value={manT_endDate}
+                      onChange={e => setManT_endDate(e.target.value)}
+                      className="w-full bg-gray-50 border-0 rounded-xl px-3 py-3 text-xs font-semibold text-zinc-800 focus:ring-2 focus:ring-green-600 transition-all cursor-pointer"
+                      required={manT_mode === 'range'}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Keterangan / Alasan</label>
+                <textarea
+                  value={manT_keterangan}
+                  onChange={e => setManT_keterangan(e.target.value)}
+                  placeholder={`Masukkan alasan guru ${manT_status.toLowerCase()} (misal: sakit flu, izin dinas luar, dll)`}
+                  rows={3}
+                  className="w-full bg-gray-50 border-0 rounded-xl px-4 py-3 text-sm font-semibold text-zinc-800 focus:ring-2 focus:ring-green-600 transition-all"
+                  required
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={manT_saving}
+                className="w-full bg-green-800 hover:bg-green-700 text-white font-black uppercase tracking-wider text-xs py-4 rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {manT_saving ? "Menyimpan..." : "Simpan Kehadiran"}
+              </button>
+            </form>
+          </div>
+
+          <div className="lg:col-span-12 xl:col-span-7 bg-white p-6 rounded-3xl border border-gray-100 shadow-sm space-y-4">
+            <div className="flex justify-between items-center border-b border-gray-50 pb-2">
+              <h3 className="text-sm font-black text-gray-800 uppercase tracking-wider">Histori Presensi Manual</h3>
+              <span className="bg-green-100 text-green-800 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider">
+                {totalKeteranganCount} Record
+              </span>
+            </div>
+
+            <div className="relative">
+              <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                <Search size={14} />
+              </span>
+              <input
+                type="text"
+                placeholder="Cari nama guru..."
+                value={manT_searchTerm}
+                onChange={e => setManT_searchTerm(e.target.value)}
+                className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border-0 rounded-xl text-xs font-semibold text-zinc-800 focus:ring-2 focus:ring-green-600 transition-all"
+              />
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-gray-100 max-h-[450px] overflow-y-auto">
+              <table className="w-full text-left text-xs min-w-[500px]">
+                <thead className="bg-gray-50 text-gray-400 uppercase font-black text-[10px] tracking-wider sticky top-0 z-10 border-b border-gray-100">
+                  <tr>
+                    <th className="px-4 py-3 text-center w-12">No</th>
+                    <th className="px-4 py-3">Nama Guru</th>
+                    <th className="px-4 py-3 text-center">Tanggal</th>
+                    <th className="px-4 py-3 text-center">Kelas</th>
+                    <th className="px-4 py-3 text-center">Status</th>
+                    <th className="px-4 py-3">Keterangan</th>
+                    <th className="px-4 py-3 text-center w-16">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {manualEntries
+                    .filter(entry => entry.nama.toLowerCase().includes(manT_searchTerm.toLowerCase()))
+                    .map((item, idx) => {
+                      let badgeColor = "";
+                      if (item.status === 'Sakit') badgeColor = "bg-orange-100 text-orange-700 border-orange-200";
+                      else if (item.status === 'Izin') badgeColor = "bg-amber-100 text-amber-700 border-amber-200";
+                      else badgeColor = "bg-red-100 text-red-700 border-red-200";
+
+                      return (
+                        <tr key={item.id} className="hover:bg-gray-50 transition-colors">
+                          <td className="px-4 py-3 text-center font-bold text-gray-400">{idx + 1}</td>
+                          <td className="px-4 py-3 font-bold text-zinc-800 whitespace-nowrap">{item.nama}</td>
+                          <td className="px-4 py-3 text-center font-medium text-gray-500 whitespace-nowrap">
+                            {formatIndoDate(item.tanggal)}
+                          </td>
+                          <td className="px-4 py-3 text-center font-bold">
+                            <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[9px]">{item.kelas}</span>
+                          </td>
+                          <td className="px-4 py-3 text-center font-black">
+                            <span className={`px-2 py-0.5 rounded-full border text-[9px] ${badgeColor}`}>
+                              {item.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-zinc-600 max-w-[150px] truncate" title={item.keterangan || '-'}>
+                            {item.keterangan || '-'}
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <button
+                              onClick={() => {
+                                setConfirmModal({
+                                  show: true,
+                                  title: 'Hapus Kehadiran Manual?',
+                                  entityName: `Izin/Sakit: ${item.nama} pada ${item.tanggal}`,
+                                  message: 'Data ketidakhadiran guru ini akan dihapus dari sistem.',
+                                  onConfirm: async () => {
+                                    toggleLoader(true);
+                                    try {
+                                      await firestoreService.hapusAbsensiGuru(item.id);
+                                      triggerSuccess("BERHASIL", "Presensi manual berhasil dihapus.");
+                                    } catch (err) {
+                                      alert("Gagal menghapus data.");
+                                    } finally {
+                                      toggleLoader(false);
+                                    }
+                                  }
+                                });
+                              }}
+                              className="text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition-all cursor-pointer"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  {manualEntries.filter(entry => entry.nama.toLowerCase().includes(manT_searchTerm.toLowerCase())).length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="text-center py-8 text-gray-400 font-bold italic">
+                        Belum ada data izin/sakit guru.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
     );
   };
@@ -1691,6 +2289,7 @@ export default function App() {
   const [loginNisn, setLoginNisn] = useState('');
   const [loginUser, setLoginUser] = useState('');
   const [loginPass, setLoginPass] = useState('');
+  const [loginError, setLoginError] = useState('');
   const [showPass, setShowPass] = useState(false);
 
   // Scanner states
@@ -2859,6 +3458,7 @@ export default function App() {
     setLoginNisn('');
     setLoginUser('');
     setLoginPass('');
+    setLoginError('');
   }, [loginRole]);
 
   const [siswaAbsensiManual, setSiswaAbsensiManual] = useState({ nisn: '', status: 'Hadir', ket: '', tanggal: new Date().toISOString().split('T')[0] });
@@ -2895,6 +3495,7 @@ export default function App() {
           };
         })
       : teachers
+        .filter(t => t.nip !== 'ADMIN001' && t.role !== 'Admin')
         .filter(t => {
            if (!rekapFilter.kelas) return true;
            const scheds = teachingSchedules.filter(ts => ts.nip === t.nip);
@@ -2902,14 +3503,15 @@ export default function App() {
         })
         .map((t, idx) => {
           const schedules = teachingSchedules.filter(ts => ts.nip === t.nip && (rekapFilter.kelas ? ts.kelas === rekapFilter.kelas : true));
-          const [y, m] = rekapFilter.bulan.split('-').map(Number);
-          const totalTarget = schedules.reduce((sum, sch) => {
-            return sum + getEffectiveTargetSessionsForSchedule(sch, y, m - 1, holidays, settings);
-          }, 0);
-          const monthAtts = teacherAttendance.filter(ta => ta.nip === t.nip && (rekapFilter.kelas ? ta.kelas === rekapFilter.kelas : true) && ta.tanggal.startsWith(rekapFilter.bulan));
-          const actual = monthAtts.length;
-          const totalLambat = monthAtts.reduce((sum, a) => sum + (a.terlambat || 0), 0);
-          const perc = totalTarget > 0 ? Math.round((actual / totalTarget) * 100) : 0;
+          const { totalTarget, hadir, sakit, izin, alfa, totalLambat, perc } = calculateTeacherMonthlyStats(
+            t.nip,
+            rekapFilter.bulan,
+            rekapFilter.kelas,
+            teachingSchedules,
+            holidays,
+            settings,
+            teacherAttendance
+          );
           const mapelTaught = Array.from(new Set(schedules.map(sc => sc.mapel).filter(Boolean))).join(', ') || '-';
           return {
             "No.": idx + 1,
@@ -2917,10 +3519,13 @@ export default function App() {
             "Mapel": mapelTaught,
             "Kelas": rekapFilter.kelas || schedules.map(s => s.kelas).join(', ') || '-',
             "Target Sesi": totalTarget,
-            "Aktual Sesi": actual,
+            "Hadir": hadir,
+            "Sakit": sakit,
+            "Izin": izin,
+            "Alfa": alfa,
             "Terlambat (Menit)": totalLambat,
             "Jam Terlambat": formatMinutes(totalLambat),
-            "% Kinerja": `${perc}%`
+            "% Kinerja": `${perc}% (Hadir: ${hadir}, Sakit: ${sakit}, Izin: ${izin}, Alpa: ${alfa})`
           };
         });
     
@@ -2951,6 +3556,7 @@ export default function App() {
           return [idx + 1, s.nama, s.kelas, h, i, sk, f, lbt, `${p}%`];
         })
       : teachers
+        .filter(t => t.nip !== 'ADMIN001' && t.role !== 'Admin')
         .filter(t => {
           if (!rekapFilter.kelas) return true;
           const scheds = teachingSchedules.filter(ts => ts.nip === t.nip);
@@ -2958,27 +3564,49 @@ export default function App() {
         })
         .map((t, idx) => {
           const schs = teachingSchedules.filter(ts => ts.nip === t.nip && (rekapFilter.kelas ? ts.kelas === rekapFilter.kelas : true));
-          const [y, m] = rekapFilter.bulan.split('-').map(Number);
-          const tgt = schs.reduce((sum, sch) => {
-            return sum + getEffectiveTargetSessionsForSchedule(sch, y, m - 1, holidays, settings);
-          }, 0);
-          const atts = teacherAttendance.filter(ta => ta.nip === t.nip && (rekapFilter.kelas ? ta.kelas === rekapFilter.kelas : true) && ta.tanggal.startsWith(rekapFilter.bulan));
-          const act = atts.length;
-          const lbt = atts.reduce((sum, a) => sum + (a.terlambat || 0), 0);
-          const p = tgt > 0 ? Math.round((act / tgt) * 100) : 0;
+          const { totalTarget, hadir, sakit, izin, alfa, perc } = calculateTeacherMonthlyStats(
+            t.nip,
+            rekapFilter.bulan,
+            rekapFilter.kelas,
+            teachingSchedules,
+            holidays,
+            settings,
+            teacherAttendance
+          );
           const mapelTaught = Array.from(new Set(schs.map(sc => sc.mapel).filter(Boolean))).join(', ') || '-';
-          return [idx + 1, t.nama, mapelTaught, rekapFilter.kelas || schs.map(s => s.kelas).join(', ') || '-', tgt, act, lbt, `${p}%`];
+          return [idx + 1, t.nama, mapelTaught, rekapFilter.kelas || schs.map(s => s.kelas).join(', ') || '-', totalTarget, hadir, sakit, izin, alfa, `${perc}%`];
         });
     
-    doc.text(`Laporan Rekap Kehadiran ${rekapFilter.type}`, 14, 15);
-    doc.text(`Bulan: ${rekapFilter.bulan}`, 14, 25);
+    const getIndonesianMonthYear = (bulanStr: string) => {
+      if (!bulanStr) return '';
+      const parts = bulanStr.split('-');
+      if (parts.length === 2) {
+        const year = parts[0];
+        const monthNum = parseInt(parts[1], 10);
+        const indonesianMonths = [
+          "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+          "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+        ];
+        const monthName = indonesianMonths[monthNum - 1] || parts[1];
+        return `${monthName}/${year}`;
+      }
+      return bulanStr;
+    };
+
+    const classString = rekapFilter.kelas ? ` Kelas ${rekapFilter.kelas}` : '';
+    const formattedBulan = getIndonesianMonthYear(rekapFilter.bulan);
+
+    doc.setFontSize(14);
+    doc.text(`Laporan Rekap Kehadiran ${rekapFilter.type}${classString}`, 14, 15);
+    doc.setFontSize(10);
+    doc.text(`Bulan: ${formattedBulan}`, 14, 23);
     
     const columns = isSiswa 
       ? ["No.", "Nama", "Kelas", "H", "I", "S", "A", "Lbt(m)", "%"]
-      : ["No.", "Nama Guru", "Mapel", "Kelas", "Target", "Aktual", "Lbt(m)", "%"];
+      : ["No.", "Nama Guru", "Mapel", "Kelas", "Target", "H", "S", "I", "A", "%"];
       
     autoTable(doc, {
-      startY: 30,
+      startY: 28,
       head: [columns],
       body: data,
     });
@@ -3024,10 +3652,15 @@ export default function App() {
     const p = loginRole === 'Siswa' ? '' : loginPass;
     
     if (!u || (loginRole !== 'Siswa' && !p)) {
-      alert("Harap isi semua kolom login.");
+      const msg = loginRole === 'Siswa' 
+        ? "Nomor Induk Siswa Nasional (NISN) wajib diisi." 
+        : "ID Pengguna dan Kata Sandi wajib diisi.";
+      setLoginError(msg);
+      alert(msg);
       return;
     }
 
+    setLoginError('');
     toggleLoader(true);
     try {
       const res = await firestoreService.checkLogin(u, p, loginRole);
@@ -3036,11 +3669,15 @@ export default function App() {
         setSession(res);
         if (res.role === 'Siswa') setActivePanel('siswa-personal');
       } else {
-        alert(res.message);
+        const errorMsg = res.message || (loginRole === 'Siswa' ? "NISN salah atau tidak terdaftar." : "Username atau Password salah.");
+        setLoginError(errorMsg);
+        alert(errorMsg);
       }
     } catch (e) {
       toggleLoader(false);
-      alert("Gagal terhubung ke database.");
+      const errMsg = "Gagal terhubung ke database. Silakan coba beberapa saat lagi.";
+      setLoginError(errMsg);
+      alert(errMsg);
     }
   };
 
@@ -3229,6 +3866,23 @@ export default function App() {
           })()}
 
           <div className="space-y-4">
+            <AnimatePresence>
+              {loginError && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3 text-red-800"
+                >
+                  <AlertCircle size={18} className="text-red-600 shrink-0 mt-0.5" />
+                  <div className="text-xs font-semibold leading-relaxed">
+                    <span className="font-extrabold uppercase tracking-wider block text-[10px] text-red-700 mb-0.5">Kesalahan Masuk</span>
+                    {loginError}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {loginRole === 'Siswa' ? (
               <div>
                 <label className="block text-xs font-bold text-gray-400 uppercase mb-1 ml-1">Nomor Induk Siswa Nasional (NISN)</label>
@@ -3236,7 +3890,7 @@ export default function App() {
                   type="number" 
                   disabled={loading}
                   value={loginNisn}
-                  onChange={e => setLoginNisn(e.target.value)}
+                  onChange={e => { setLoginNisn(e.target.value); setLoginError(''); }}
                   className="w-full bg-gray-50 border-0 rounded-xl py-3 px-4 focus:ring-2 focus:ring-green-500 transition-all font-medium disabled:opacity-50" 
                   placeholder="Masukkan NISN"
                 />
@@ -3249,7 +3903,7 @@ export default function App() {
                     type="text" 
                     disabled={loading}
                     value={loginUser}
-                    onChange={e => setLoginUser(e.target.value)}
+                    onChange={e => { setLoginUser(e.target.value); setLoginError(''); }}
                     className="w-full bg-gray-50 border-0 rounded-xl py-3 px-4 focus:ring-2 focus:ring-green-500 transition-all font-medium disabled:opacity-50" 
                     placeholder="Username"
                   />
@@ -3261,7 +3915,7 @@ export default function App() {
                       type={showPass ? "text" : "password"} 
                       disabled={loading}
                       value={loginPass}
-                      onChange={e => setLoginPass(e.target.value)}
+                      onChange={e => { setLoginPass(e.target.value); setLoginError(''); }}
                       className="w-full bg-gray-50 border-0 rounded-xl py-3 px-4 focus:ring-2 focus:ring-green-500 transition-all font-medium disabled:opacity-50" 
                       placeholder="••••••••"
                     />
@@ -3420,6 +4074,7 @@ export default function App() {
       if (jabatan === 'Kamad') {
         items.push({ id: 'absensi-umum', label: 'Absensi Siswa', icon: ClipboardList });
         items.push({ id: 'absensi-guru', label: 'Absensi Guru', icon: User });
+        items.push({ id: 'input-kehadiran-guru', label: 'Input Kehadiran Guru', icon: CalendarRange });
         items.push({ id: 'capaian-guru', label: 'Laporan Capaian Guru', icon: Award });
         items.push({ id: 'analisis', label: 'Analisis Kehadiran', icon: BarChart3 });
       } else if (jabatan === 'Wakamad') {
@@ -4265,7 +4920,7 @@ export default function App() {
                     className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-3 font-bold mt-1 text-sm focus:ring-2 focus:ring-green-500"
                   >
                     <option value="">-- Pilih Guru --</option>
-                    {teachers.map(t => <option key={t.nip} value={t.nip}>{t.nama}</option>)}
+                    {teachers.filter(t => t.nip !== 'ADMIN001' && t.role !== 'Admin').map(t => <option key={t.nip} value={t.nip}>{t.nama}</option>)}
                   </select>
                 </div>
                 <div>
@@ -4507,9 +5162,10 @@ export default function App() {
 
   // Filtered lists for panels
   const filteredGuru = useMemo(() => {
-    if (!searchTermGuru) return teachers;
+    const list = teachers.filter(t => t.nip !== 'ADMIN001' && t.role !== 'Admin');
+    if (!searchTermGuru) return list;
     const s = searchTermGuru.toLowerCase();
-    return teachers.filter(t => t.nama.toLowerCase().includes(s) || t.nip.toLowerCase().includes(s));
+    return list.filter(t => t.nama.toLowerCase().includes(s) || t.nip.toLowerCase().includes(s));
   }, [teachers, searchTermGuru]);
 
   const filteredSiswa = useMemo(() => {
@@ -4894,8 +5550,8 @@ export default function App() {
                         const todaySetting = settings.find(st => st.hari === todayDayName);
                         const currentHoliday = holidays.find(h => h.tanggal === todayDateStr);
 
-                        // Filter only real teachers (not students, not Kamad themselves)
-                        const filteredTeachers = teachers.filter(t => t.role !== 'Siswa' && t.nip !== session?.uid);
+                        // Filter only real teachers (not students, not Kamad themselves, not Administrator)
+                        const filteredTeachers = teachers.filter(t => t.role !== 'Siswa' && t.nip !== session?.uid && t.nip !== 'ADMIN001' && t.role !== 'Admin');
 
                         if (filteredTeachers.length === 0) {
                           return (
@@ -5045,7 +5701,12 @@ export default function App() {
                               let teacherStatus: 'HIJAU' | 'MERAH' | 'STANDBY' | 'ABU-ABU' = 'ABU-ABU';
                               let statusLabel = "Tidak Mengajar";
 
-                              if (currentHoliday) {
+                              const todayStatusRecord = teacherAttendance.find(ta => ta.nip === teacher.nip && ta.tanggal === todayDateStr && ta.status);
+
+                              if (todayStatusRecord) {
+                                teacherStatus = 'ABU-ABU';
+                                statusLabel = todayStatusRecord.status; // 'Sakit' or 'Izin' or 'Alfa'
+                              } else if (currentHoliday) {
                                 if (isTeachingToday) {
                                   teacherStatus = 'ABU-ABU';
                                   statusLabel = `Hari Libur ${currentHoliday.keterangan}`;
@@ -5130,6 +5791,31 @@ export default function App() {
                                   avatarClass = "bg-zinc-100 text-zinc-500 border-zinc-200";
                                   badgeClass = "bg-zinc-100 text-zinc-600 border-zinc-200 font-bold";
                                   break;
+                              }
+
+                              if (todayStatusRecord) {
+                                if (todayStatusRecord.status === 'Sakit') {
+                                  cardClass = "bg-orange-50/20 border-orange-200 hover:bg-orange-50/40 ring-1 ring-orange-100 shadow-sm opacity-100";
+                                  circleClass = "bg-orange-500 border-orange-600 shadow shadow-orange-100";
+                                  nameColorClass = "text-orange-950 font-black";
+                                  roleColorClass = "text-orange-700/80 font-bold";
+                                  avatarClass = "bg-orange-100 text-orange-700 border-orange-200";
+                                  badgeClass = "bg-orange-100 text-orange-850 border-orange-200 font-extrabold";
+                                } else if (todayStatusRecord.status === 'Izin') {
+                                  cardClass = "bg-amber-50/20 border-amber-200 hover:bg-amber-50/40 ring-1 ring-amber-100 shadow-sm opacity-100";
+                                  circleClass = "bg-amber-500 border-amber-600 shadow shadow-amber-150";
+                                  nameColorClass = "text-amber-950 font-black";
+                                  roleColorClass = "text-amber-700/80 font-bold";
+                                  avatarClass = "bg-amber-100 text-amber-700 border-amber-200";
+                                  badgeClass = "bg-amber-100 text-amber-850 border-amber-200 font-extrabold";
+                                } else if (todayStatusRecord.status === 'Alfa' || todayStatusRecord.status === 'Alpa') {
+                                  cardClass = "bg-rose-50/20 border-rose-200 hover:bg-rose-50/40 ring-1 ring-rose-100 shadow-sm opacity-100";
+                                  circleClass = "bg-rose-500 border-rose-600 shadow shadow-rose-150";
+                                  nameColorClass = "text-rose-950 font-black";
+                                  roleColorClass = "text-rose-700/80 font-bold";
+                                  avatarClass = "bg-rose-100 text-rose-700 border-rose-200";
+                                  badgeClass = "bg-rose-100 text-rose-850 border-rose-200 font-extrabold";
+                                }
                               }
 
                               return (
@@ -5317,7 +6003,18 @@ export default function App() {
                                 ta.tanggal === todayDateStr
                               );
 
-                              const isAlreadyAttended = !!attendanceRecord;
+                              // Check if there is ANY manual leave (Izin/Sakit/Alfa) record for the teacher today, either general or classy
+                              const leaveRecord = teacherAttendance.find(ta =>
+                                ta.nip === session?.uid &&
+                                ta.tanggal === todayDateStr &&
+                                (ta.status === 'Izin' || ta.status === 'Sakit' || ta.status === 'Alfa')
+                              );
+
+                              const isLeaveOrPaidOff = !!leaveRecord;
+                              const leaveStatus = leaveRecord?.status;
+                              const leaveKeterangan = leaveRecord?.keterangan || "";
+
+                              const isAlreadyAttended = !!attendanceRecord && !leaveRecord;
 
                               // Check if any of these JPs are inactive in today's settings
                               const activeJpsList = todaySetting?.activeJps && Array.isArray(todaySetting.activeJps)
@@ -5369,6 +6066,12 @@ export default function App() {
                                       ? 'bg-rose-50/10 border-rose-150 opacity-80'
                                       : isJpInactive
                                       ? 'bg-zinc-105 border-zinc-200/80 opacity-65'
+                                      : isLeaveOrPaidOff
+                                      ? leaveStatus === 'Izin'
+                                        ? 'bg-sky-50/25 border-sky-150 shadow-sm'
+                                        : leaveStatus === 'Sakit'
+                                        ? 'bg-amber-50/25 border-amber-150 shadow-sm'
+                                        : 'bg-rose-50/25 border-rose-150 shadow-sm'
                                       : isAlreadyAttended
                                       ? 'bg-emerald-50/25 border-emerald-100 hover:bg-emerald-50/40'
                                       : buttonStatus === 'active'
@@ -5389,8 +6092,22 @@ export default function App() {
                                         </span>
                                         <span className="text-lg font-black text-zinc-900 group-hover:text-green-950 transition-colors">Kelas {sched.kelas}</span>
                                       </div>
-                                      <div className={`px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-wider border whitespace-nowrap leading-none ${statusBg}`}>
-                                        {isAlreadyAttended ? "Selesai Presensi ✓" : statusLabel}
+                                      <div className={`px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-wider border whitespace-nowrap leading-none ${
+                                        isLeaveOrPaidOff
+                                          ? leaveStatus === 'Izin'
+                                            ? 'bg-sky-50 border-sky-250 text-sky-700'
+                                            : leaveStatus === 'Sakit'
+                                            ? 'bg-amber-50 border-amber-250 text-amber-700'
+                                            : 'bg-rose-50 border-rose-250 text-rose-700'
+                                          : isAlreadyAttended
+                                          ? 'bg-emerald-50 border-emerald-250 text-emerald-700'
+                                          : statusBg
+                                      }`}>
+                                        {isLeaveOrPaidOff 
+                                          ? `STATUS: ${leaveStatus?.toUpperCase()}` 
+                                          : isAlreadyAttended 
+                                          ? "Selesai Presensi ✓" 
+                                          : statusLabel}
                                       </div>
                                     </div>
 
@@ -5410,7 +6127,35 @@ export default function App() {
                                   </div>
 
                                   <div className="mt-4 pt-4 border-t border-gray-100/60 font-sans">
-                                    {isAlreadyAttended ? (
+                                    {isLeaveOrPaidOff ? (
+                                      <div className={`p-4 rounded-2xl border transition-all text-left ${
+                                        leaveStatus === 'Izin'
+                                          ? 'bg-sky-50/65 border-sky-150 text-sky-950'
+                                          : leaveStatus === 'Sakit'
+                                          ? 'bg-amber-50/65 border-amber-150 text-amber-950'
+                                          : 'bg-rose-50/65 border-rose-150 text-rose-950'
+                                      }`}>
+                                        <div className="flex items-start gap-3">
+                                          <div className={`w-8 h-8 rounded-xl shrink-0 font-bold flex items-center justify-center text-white ${
+                                            leaveStatus === 'Izin'
+                                              ? 'bg-sky-600'
+                                              : leaveStatus === 'Sakit'
+                                              ? 'bg-amber-600'
+                                              : 'bg-rose-600'
+                                          }`}>
+                                            {leaveStatus === 'Izin' ? '✉️' : leaveStatus === 'Sakit' ? '🤒' : '🚫'}
+                                          </div>
+                                          <div className="text-left font-sans flex-1">
+                                            <p className="text-xs font-black uppercase">
+                                              Berhalangan: {leaveStatus}
+                                            </p>
+                                            <p className="text-[10px] font-bold text-gray-500 mt-1 leading-normal">
+                                              Anda berstatus {leaveStatus?.toLowerCase()} hari ini {leaveKeterangan ? `(${leaveKeterangan})` : ''}. Sistem menonaktifkan presensi kelas karena izin yang diajukan telah disetujui Kamad.
+                                            </p>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ) : isAlreadyAttended ? (
                                       <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5">
                                         <div className="flex items-center gap-2.5 text-left">
                                           <div className="w-7 h-7 rounded-lg bg-emerald-500 flex items-center justify-center text-white shrink-0 font-extrabold text-sm">
@@ -5914,7 +6659,7 @@ export default function App() {
                    <div className="h-64 relative">
                       {teachers.length > 0 ? (
                         <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-                          <BarChart data={teachers.filter(t => {
+                          <BarChart data={teachers.filter(t => t.nip !== 'ADMIN001' && t.role !== 'Admin').filter(t => {
                              if (!analysisClass) return true;
                              const scheds = (teachingSchedules || []).filter(ts => ts.nip === t.nip);
                              return scheds.some(s => s.kelas === analysisClass);
@@ -5950,7 +6695,7 @@ export default function App() {
                          {session?.role === 'Guru' && session?.isWali ? `Performa Guru di ${session.kelas} < 50% (${getMonthYearText(analysisMonth)})` : `Guru Performa < 50% (${getMonthYearText(analysisMonth)})`}
                        </h4>
                       <div className="max-h-48 overflow-y-auto space-y-2">
-                        {(teachers || []).filter(t => {
+                        {(teachers || []).filter(t => t.nip !== 'ADMIN001' && t.role !== 'Admin').filter(t => {
                            if (!analysisClass) return true;
                            const scheds = (teachingSchedules || []).filter(ts => ts.nip === t.nip);
                            return scheds.some(s => s.kelas === analysisClass);
@@ -6154,7 +6899,7 @@ export default function App() {
                                                       ({cs.jps.map((j: number) => `JP ${j}`).join(', ')})
                                                     </span>
                                                   )}
-                                                  <span className="text-[10px] text-zinc-400 font-bold italic">({cs.targetPertemuan} target/bln)</span>
+                                                  <span className="text-[10px] text-zinc-400 font-bold italic">({cs.targetPertemuan} target/mgu)</span>
                                                 </div>
                                               ))}
                                             </div>
@@ -6445,21 +7190,20 @@ export default function App() {
             </motion.div>
           )}
 
-          {activePanel === 'absensi-wali' && (
+            {activePanel === 'absensi-wali' && (
             <motion.div key="absensi-wali" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                 <div className="xl:col-span-2 space-y-6">
                   {(() => {
-                    const today = new Date().toISOString().split('T')[0];
                     const classStudents = students.filter(s => s.kelas === session?.kelas);
-                    const classAttendanceToday = attendance.filter(a => a.tanggal === today && classStudents.some(s => s.nisn === a.nisn));
+                    const classAttendanceToday = attendance.filter(a => a.tanggal === waliFilterTanggal && classStudents.some(s => s.nisn === a.nisn));
                     
                     const countHadir = classAttendanceToday.filter(a => a.status === 'Hadir').length;
                     const countTerlambat = classAttendanceToday.filter(a => a.status === 'Hadir' && a.terlambat > 0).length;
                     const countSakit = classAttendanceToday.filter(a => a.status === 'Sakit').length;
                     const countIzin = classAttendanceToday.filter(a => a.status === 'Izin').length;
                     
-                    const isHoliday = holidays.some(h => h.tanggal === today) || new Date().getDay() === 0;
+                    const isHoliday = holidays.some(h => h.tanggal === waliFilterTanggal) || new Date(waliFilterTanggal).getDay() === 0;
                     const recordedAlfa = classAttendanceToday.filter(a => a.status === 'Alfa').length;
                     const attendedNisns = new Set(classAttendanceToday.map(a => a.nisn));
                     const notYetCheckedIn = classStudents.length - attendedNisns.size;
@@ -6521,22 +7265,66 @@ export default function App() {
                   })()}
 
                   <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                    <div className="p-6 bg-green-50 border-b border-green-100 flex justify-between items-center">
+                    <div className="p-6 bg-green-50 border-b border-green-100 flex flex-col sm:flex-row gap-4 justify-between sm:items-center">
                        <div>
-                         <h2 className="text-sm font-black text-green-900 uppercase tracking-widest">Riwayat Kehadiran Siswa ({session?.kelas}) Hari Ini</h2>
-                         <p className="text-[10px] text-green-700 font-bold mt-0.5">Hasil absensi scanner atau manual hari ini.</p>
+                          <h2 className="text-sm font-black text-green-900 uppercase tracking-widest">Riwayat Kehadiran Siswa ({session?.kelas})</h2>
+                          <p className="text-[10px] text-green-700 font-bold mt-0.5">Hasil absensi tanggal {formatIndoDate(waliFilterTanggal)}.</p>
                        </div>
-                  <div className="flex items-center gap-2">
-                    <select 
-                      value={pageSize} 
-                      onChange={e => setPageSize(parseInt(e.target.value))}
-                      className="bg-zinc-100 text-zinc-600 px-3 py-2 rounded-xl text-[10px] font-black uppercase border-0 focus:ring-0"
-                    >
-                      {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
-                    </select>
-                    <div className="bg-white px-3 py-1 rounded-full border border-green-200 text-[10px] font-black">{new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
-                  </div>
+                       <div className="flex items-center gap-2">
+                         <select 
+                           value={pageSize} 
+                           onChange={e => { setPageSize(parseInt(e.target.value)); setWaliPagination(0); }}
+                           className="bg-zinc-100 text-zinc-600 px-3 py-2 rounded-xl text-[10px] font-black uppercase border-0 focus:ring-0"
+                         >
+                           {[10, 20, 50, 100].map(v => <option key={v} value={v}>Tampil {v}</option>)}
+                         </select>
+                         <div className="bg-white px-3 py-1.5 rounded-xl border border-green-200 text-[10px] font-black">{formatIndoDate(waliFilterTanggal)}</div>
+                       </div>
                     </div>
+
+                    {/* Filter Bar */}
+                    <div className="p-4 bg-zinc-50 border-b border-zinc-100 grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div>
+                        <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Pencarian Nama</label>
+                        <div className="relative mt-1">
+                          <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
+                          <input 
+                            type="text" 
+                            placeholder="Cari nama siswa..." 
+                            value={waliFilterNama}
+                            onChange={e => { setWaliFilterNama(e.target.value); setWaliPagination(0); }}
+                            className="w-full bg-white border border-zinc-200 rounded-xl px-9 py-1.5 text-xs font-bold focus:ring-1 focus:ring-green-500 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Status Kehadiran</label>
+                        <select 
+                          value={waliFilterStatus}
+                          onChange={e => { setWaliFilterStatus(e.target.value); setWaliPagination(0); }}
+                          className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-1.5 text-xs font-bold mt-1 focus:ring-1 focus:ring-green-500 focus:outline-none focus:border-green-500"
+                        >
+                          <option value="">Semua Status</option>
+                          <option value="Hadir">Hadir</option>
+                          <option value="Sakit">Sakit</option>
+                          <option value="Izin">Izin</option>
+                          <option value="Alfa">Alfa</option>
+                          <option value="Belum Absen">Belum Absen</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Pilih Tanggal</label>
+                        <input 
+                          type="date" 
+                          value={waliFilterTanggal}
+                          onChange={e => { setWaliFilterTanggal(e.target.value); setWaliPagination(0); }}
+                          className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-1.5 text-xs font-bold mt-1 focus:ring-1 focus:ring-green-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
                     <div className="overflow-x-auto">
                       <table className="w-full text-left text-sm min-w-[600px]">
                         <thead className="bg-gray-50 text-gray-400 uppercase text-[10px] font-black tracking-widest border-b border-gray-100">
@@ -6549,43 +7337,126 @@ export default function App() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50">
-                          {students.filter(s => s.kelas === session?.kelas).map((s, i) => {
-                            const today = new Date().toISOString().split('T')[0];
-                            const current = attendance.find(a => a.nisn === s.nisn && a.tanggal === today);
-                            return (
-                              <tr key={s.nisn} className="hover:bg-gray-50 transition-colors">
-                                <td className="px-6 py-4 text-center font-bold text-gray-400 text-xs">{i + 1}</td>
-                                <td className="px-6 py-4">
-                                  <p className="font-bold">{s.nama}</p>
-                                  <p className="text-[10px] text-gray-400 font-mono">{s.nisn}</p>
-                                </td>
-                                <td className="px-6 py-4">
-                                  <span className={`px-3 py-1 rounded-full text-[10px] font-black ${current?.status === 'Hadir' ? 'bg-green-100 text-green-700' : current ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-400'}`}>
-                                    {current?.status || 'BELUM ABSEN'}
-                                  </span>
-                                </td>
-                                <td className="px-6 py-4 text-[11px] text-gray-500 italic max-w-[200px] truncate">
-                                  {current?.keterangan || '-'}
-                                </td>
-                                <td className="px-6 py-4 text-center">
-                                  <button 
-                                    onClick={() => setSiswaAbsensiManual({ 
-                                      nisn: s.nisn, 
-                                      status: current?.status || 'Hadir', 
-                                      ket: current?.keterangan || '', 
-                                      tanggal: today 
-                                    })}
-                                    className="p-2 border border-zinc-100 rounded-lg hover:bg-zinc-50 text-green-600"
-                                  >
-                                    <Edit size={14} />
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
+                          {(() => {
+                            const filteredWali = students
+                              .filter(s => s.kelas === session?.kelas)
+                              .filter(s => {
+                                if (waliFilterNama && !s.nama.toLowerCase().includes(waliFilterNama.toLowerCase())) {
+                                  return false;
+                                }
+                                const current = attendance.find(a => a.nisn === s.nisn && a.tanggal === waliFilterTanggal);
+                                const statusValue = current?.status || 'Belum Absen';
+
+                                if (waliFilterStatus) {
+                                  if (waliFilterStatus === 'Belum Absen') {
+                                    return !current;
+                                  }
+                                  return current?.status === waliFilterStatus;
+                                }
+                                return true;
+                              })
+                              .sort((a, b) => a.nama.localeCompare(b.nama));
+
+                            if (filteredWali.length === 0) {
+                              return (
+                                <tr>
+                                  <td colSpan={5} className="px-6 py-12 text-center text-gray-400 font-bold uppercase tracking-widest text-[10px]">
+                                    Tidak ada data siswa yang cocok dengan filter.
+                                  </td>
+                                </tr>
+                              );
+                            }
+
+                            return filteredWali.slice(waliPagination, waliPagination + pageSize).map((s, i) => {
+                              const current = attendance.find(a => a.nisn === s.nisn && a.tanggal === waliFilterTanggal);
+                              return (
+                                <tr key={s.nisn} className="hover:bg-gray-50 transition-colors">
+                                  <td className="px-6 py-4 text-center font-bold text-gray-400 text-xs">{waliPagination + i + 1}</td>
+                                  <td className="px-6 py-4">
+                                    <p className="font-bold text-zinc-800">{s.nama}</p>
+                                    <p className="text-[10px] text-gray-400 font-mono">{s.nisn}</p>
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <span className={`px-3 py-1 rounded-full text-[10px] font-black ${
+                                      current?.status === 'Hadir' ? 'bg-green-100 text-green-700' : 
+                                      current?.status === 'Sakit' ? 'bg-amber-100 text-amber-700' :
+                                      current?.status === 'Izin' ? 'bg-indigo-100 text-indigo-700' :
+                                      current?.status === 'Alfa' ? 'bg-rose-100 text-rose-700' :
+                                      'bg-gray-100 text-gray-400'
+                                    }`}>
+                                      {current?.status || 'BELUM ABSEN'}
+                                    </span>
+                                  </td>
+                                  <td className="px-6 py-4 text-[11px] text-gray-500 italic max-w-[200px] truncate">
+                                    {current?.keterangan || '-'}
+                                  </td>
+                                  <td className="px-6 py-4 text-center">
+                                    <button 
+                                      onClick={() => setSiswaAbsensiManual({ 
+                                        nisn: s.nisn, 
+                                        status: current?.status || 'Hadir', 
+                                        ket: current?.keterangan || '', 
+                                        tanggal: waliFilterTanggal 
+                                      })}
+                                      className="p-2 border border-zinc-100 rounded-lg hover:bg-zinc-50 text-green-600"
+                                    >
+                                      <Edit size={14} />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            });
+                          })()}
                         </tbody>
                       </table>
                     </div>
+
+                    {/* Pagination for Wali Kelas */}
+                    {(() => {
+                      const totalFilteredWali = students
+                        .filter(s => s.kelas === session?.kelas)
+                        .filter(s => {
+                          if (waliFilterNama && !s.nama.toLowerCase().includes(waliFilterNama.toLowerCase())) {
+                            return false;
+                          }
+                          const current = attendance.find(a => a.nisn === s.nisn && a.tanggal === waliFilterTanggal);
+                          if (waliFilterStatus) {
+                            if (waliFilterStatus === 'Belum Absen') {
+                              return !current;
+                            }
+                            return current?.status === waliFilterStatus;
+                          }
+                          return true;
+                        }).length;
+
+                      if (totalFilteredWali > pageSize) {
+                        return (
+                          <div className="mt-2 flex justify-end items-center gap-4 bg-zinc-50 p-4 border-t border-gray-100 text-zinc-900 px-6">
+                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                              Halaman {Math.floor(waliPagination / pageSize) + 1} S/D {Math.ceil(totalFilteredWali / pageSize)} ({totalFilteredWali} Siswa)
+                            </span>
+                            <div className="flex gap-2">
+                              <button 
+                                disabled={waliPagination === 0} 
+                                onClick={() => setWaliPagination(Math.max(0, waliPagination - pageSize))} 
+                                className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"
+                              >
+                                <ChevronLeft size={16} />
+                              </button>
+                              <button 
+                                disabled={waliPagination + pageSize >= totalFilteredWali} 
+                                onClick={() => setWaliPagination(waliPagination + pageSize)} 
+                                className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all"
+                              >
+                                <ChevronRight size={16} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
+
                   </div>
                 </div>
 
@@ -6624,13 +7495,13 @@ export default function App() {
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                          {['Hadir', 'Sakit', 'Izin', 'Alfa'].map(stat => (
-                           <button
-                             key={stat}
-                             onClick={() => setSiswaAbsensiManual({...siswaAbsensiManual, status: stat})}
-                             className={`py-3 rounded-xl text-[10px] font-black uppercase transition-all ${siswaAbsensiManual.status === stat ? 'bg-green-800 text-white shadow-lg scale-105' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}
-                           >
-                             {stat}
-                           </button>
+                            <button
+                              key={stat}
+                              onClick={() => setSiswaAbsensiManual({...siswaAbsensiManual, status: stat})}
+                              className={`py-3 rounded-xl text-[10px] font-black uppercase transition-all ${siswaAbsensiManual.status === stat ? 'bg-green-800 text-white shadow-lg scale-105' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}
+                            >
+                              {stat}
+                            </button>
                          ))}
                       </div>
                       <div>
@@ -7057,12 +7928,20 @@ export default function App() {
                 const activeSchedulesForDay = matchingSchedules.filter(s => s.hari === indonesianDayName);
 
                 activeSchedulesForDay.forEach(sch => {
-                  const actualScan = teacherAttendance.find(ta => 
+                  let actualScan = teacherAttendance.find(ta => 
                     ta.nip === sch.nip && 
                     ta.tanggal === dateStr && 
                     ta.mapel === sch.mapel && 
                     ta.kelas === sch.kelas
                   );
+
+                  if (!actualScan) {
+                    actualScan = teacherAttendance.find(ta =>
+                      ta.nip === sch.nip &&
+                      ta.tanggal === dateStr &&
+                      (ta.kelas === sch.kelas || ta.kelas === '-')
+                    );
+                  }
 
                   const schJps = sch.jps || [];
                   const hasInactiveScheduleJp = schJps.length > 0 
@@ -7071,9 +7950,13 @@ export default function App() {
 
                   let finalStatusText = 'Tidak Mengajar';
                   if (actualScan) {
-                    finalStatusText = hasInactiveScheduleJp 
-                      ? `Mengajar dan ${reason}` 
-                      : 'Mengajar';
+                    if (actualScan.status === 'Izin' || actualScan.status === 'Sakit' || actualScan.status === 'Alfa') {
+                      finalStatusText = actualScan.status;
+                    } else {
+                      finalStatusText = hasInactiveScheduleJp 
+                        ? `Mengajar dan ${reason}` 
+                        : 'Mengajar';
+                    }
                   } else {
                     if (hasInactiveScheduleJp) {
                       finalStatusText = reason;
@@ -7091,7 +7974,7 @@ export default function App() {
                     kelas: sch.kelas,
                     jam: actualScan?.jam || '-',
                     terlambat: actualScan?.terlambat || 0,
-                    scanned: !!actualScan,
+                    scanned: !!actualScan && (!actualScan.status || actualScan.status === 'Hadir'),
                     statusKeterangan: finalStatusText,
                     jps: schJps
                   });
@@ -7100,6 +7983,9 @@ export default function App() {
 
               return fullRecapList.sort((a, b) => a.tanggal.localeCompare(b.tanggal));
             })();
+
+            const validRekapMapelOffset = pagination.rekapMapel >= filteredRecap.length ? 0 : pagination.rekapMapel;
+            const slicedRecap = filteredRecap.slice(validRekapMapelOffset, validRekapMapelOffset + pageSize);
 
             return (
               <motion.div key="rekap-mapel" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
@@ -7207,7 +8093,7 @@ export default function App() {
                           {session?.role === 'Admin' ? (
                             <>
                               <option value="">Semua Guru</option>
-                              {teachers.filter(t => t.role !== 'Siswa').map(t => <option key={t.nip} value={t.nip}>{t.nama}</option>)}
+                              {teachers.filter(t => t.role !== 'Siswa' && t.nip !== 'ADMIN001' && t.role !== 'Admin').map(t => <option key={t.nip} value={t.nip}>{t.nama}</option>)}
                             </>
                           ) : (
                             <option value={session?.uid}>{session?.name}</option>
@@ -7276,7 +8162,7 @@ export default function App() {
                          </tr>
                        </thead>
                        <tbody className="divide-y divide-gray-50">
-                         {filteredRecap.map((a, i) => {
+                         {slicedRecap.map((a, i) => {
                            const classAttendance = attendance.filter(sa => sa.kelas === a.kelas && sa.tanggal === a.tanggal);
                            
                             const h = classAttendance.filter(sa => sa.status === 'Hadir').length;
@@ -7286,7 +8172,7 @@ export default function App() {
                             const jpText = a.jps && a.jps.length > 0 ? a.jps.map((j: number) => `JP ${j}`).join(', ') : '-';
                             return (
                              <tr key={a.id} className="hover:bg-gray-50">
-                               <td className="px-6 py-4 text-center text-gray-400 font-bold">{i + 1}</td>
+                               <td className="px-6 py-4 text-center text-gray-400 font-bold">{validRekapMapelOffset + i + 1}</td>
                                <td className="px-6 py-4 font-bold text-zinc-600 text-xs">{getIndonesianDay(a.tanggal)}</td>
                                <td className="px-6 py-4 font-bold text-zinc-600 text-xs text-nowrap">{a.tanggal}</td>
                                <td className="px-6 py-4 font-bold">{a.nama}</td>
@@ -7330,6 +8216,30 @@ export default function App() {
                      </table>
                    </div>
                  </div>
+
+                 {filteredRecap.length > pageSize && (
+                   <div className="mt-4 flex justify-end items-center gap-4 bg-white p-4 rounded-2xl border border-gray-100 shadow-sm text-zinc-900">
+                     <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                       Halaman {Math.floor(validRekapMapelOffset / pageSize) + 1} / {Math.ceil(filteredRecap.length / pageSize)}
+                     </span>
+                     <div className="flex gap-2">
+                       <button 
+                         disabled={validRekapMapelOffset === 0} 
+                         onClick={() => setPagination({...pagination, rekapMapel: validRekapMapelOffset - pageSize})} 
+                         className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all cursor-pointer"
+                       >
+                         <ChevronLeft size={16} />
+                       </button>
+                       <button 
+                         disabled={validRekapMapelOffset + pageSize >= filteredRecap.length} 
+                         onClick={() => setPagination({...pagination, rekapMapel: validRekapMapelOffset + pageSize})} 
+                         className="p-2 rounded-lg bg-white border border-gray-100 text-gray-400 disabled:opacity-30 hover:bg-gray-50 transition-all cursor-pointer"
+                       >
+                         <ChevronRight size={16} />
+                       </button>
+                     </div>
+                   </div>
+                 )}
               </motion.div>
             );
           })()}
@@ -7494,6 +8404,8 @@ export default function App() {
 
           {activePanel === 'profil' && renderProfile()}
 
+          {activePanel === 'input-kehadiran-guru' && renderInputKehadiranGuru()}
+
           {activePanel === 'capaian-guru' && renderLaporanCapaianGuru()}
 
           {activePanel === 'roster' && renderRoster()}
@@ -7641,6 +8553,7 @@ export default function App() {
                           })
                       ) : (
                         teachers
+                          .filter(t => t.nip !== 'ADMIN001' && t.role !== 'Admin')
                           .filter(t => {
                             if (rekapFilter.kelas) {
                               return teachingSchedules.some(ts => ts.nip === t.nip && ts.kelas === rekapFilter.kelas);
@@ -7651,14 +8564,15 @@ export default function App() {
                           .map((t, i) => {
                             const indexOffset = pagination.rekapGuru || 0;
                             const schedules = teachingSchedules.filter(ts => ts.nip === t.nip && (rekapFilter.kelas ? ts.kelas === rekapFilter.kelas : true));
-                            const [y, m] = rekapFilter.bulan.split('-').map(Number);
-                            const totalTarget = schedules.reduce((sum, sch) => {
-                              return sum + getEffectiveTargetSessionsForSchedule(sch, y, m - 1, holidays, settings);
-                            }, 0);
-                            const actual = (teacherAttendanceMap[t.nip] || [])
-                              .filter(ta => rekapFilter.kelas ? ta.kelas === rekapFilter.kelas : true)
-                              .length;
-                            const perc = totalTarget > 0 ? Math.round((actual / totalTarget) * 100) : 0;
+                            const { totalTarget, hadir, sakit, izin, alfa, perc } = calculateTeacherMonthlyStats(
+                              t.nip,
+                              rekapFilter.bulan,
+                              rekapFilter.kelas,
+                              teachingSchedules,
+                              holidays,
+                              settings,
+                              teacherAttendance
+                            );
                             const mapelTaught = Array.from(new Set(schedules.map(sc => sc.mapel).filter(Boolean))).join(', ') || '-';
                             
                             return (
@@ -7670,11 +8584,16 @@ export default function App() {
                                   {rekapFilter.kelas ? rekapFilter.kelas : (schedules.map(s => s.kelas).join(', ') || '-')}
                                 </td>
                                 <td className="px-6 py-4 text-center font-bold">{totalTarget}</td>
-                                <td className="px-6 py-4 text-center font-bold text-blue-600">{actual}</td>
+                                <td className="px-6 py-4 text-center font-bold text-blue-600">{hadir}</td>
                                 <td className="px-6 py-4 text-center">
-                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${perc >= 50 ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>
-                                    {perc}%
-                                  </span>
+                                  <div className="flex flex-col items-center">
+                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${perc >= 50 ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>
+                                      {perc}%
+                                    </span>
+                                    <span className="text-[9px] text-gray-400 mt-1 font-semibold">
+                                      (Hadir: {hadir}, Sakit: {sakit}, Izin: {izin}, Alpa: {alfa})
+                                    </span>
+                                  </div>
                                 </td>
                               </tr>
                             );
@@ -7714,7 +8633,7 @@ export default function App() {
                   })()
                 ) : (
                   (() => {
-                    const totalItems = teachers.filter(t => {
+                    const totalItems = teachers.filter(t => t.nip !== 'ADMIN001' && t.role !== 'Admin').filter(t => {
                       if (rekapFilter.kelas) {
                         return teachingSchedules.some(ts => ts.nip === t.nip && ts.kelas === rekapFilter.kelas);
                       }
@@ -7966,8 +8885,14 @@ export default function App() {
                           type="button"
                           onClick={() => {
                             const [y, m] = selectedCalendarMonth.split('-').map(Number);
-                            const prevDate = new Date(y, m - 2, 1);
-                            setSelectedCalendarMonth(prevDate.toISOString().slice(0, 7));
+                            let prevM = m - 1;
+                            let prevY = y;
+                            if (prevM === 0) {
+                              prevM = 12;
+                              prevY = y - 1;
+                            }
+                            const prevStr = `${prevY}-${String(prevM).padStart(2, '0')}`;
+                            setSelectedCalendarMonth(prevStr);
                           }}
                           className="px-3 py-1.5 hover:bg-gray-200/70 rounded-xl transition-all text-gray-700 cursor-pointer text-xs font-black uppercase tracking-wider"
                         >
@@ -7983,8 +8908,14 @@ export default function App() {
                           type="button"
                           onClick={() => {
                             const [y, m] = selectedCalendarMonth.split('-').map(Number);
-                            const nextDate = new Date(y, m, 1);
-                            setSelectedCalendarMonth(nextDate.toISOString().slice(0, 7));
+                            let nextM = m + 1;
+                            let nextY = y;
+                            if (nextM === 13) {
+                              nextM = 1;
+                              nextY = y + 1;
+                            }
+                            const nextStr = `${nextY}-${String(nextM).padStart(2, '0')}`;
+                            setSelectedCalendarMonth(nextStr);
                           }}
                           className="px-3 py-1.5 hover:bg-gray-200/70 rounded-xl transition-all text-gray-700 cursor-pointer text-xs font-black uppercase tracking-wider"
                         >

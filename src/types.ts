@@ -82,6 +82,8 @@ export interface TeacherAttendance {
   jam: string;
   terlambat: number;
   mapel?: string;
+  status?: string;
+  keterangan?: string;
 }
 
 export interface DashboardStats {
