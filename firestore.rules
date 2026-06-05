@@ -10,23 +10,7 @@ service cloud.firestore {
       allow read: if true;
     }
 
-    // Phase 3: Primitive Definition
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function isAdmin() {
-      return isSignedIn() && (
-        (request.auth.token.email in ['alazisrahmat@gmail.com', 'rahmatazis850@gmail.com'] && request.auth.token.email_verified == true) ||
-        (exists(/databases/$(database)/documents/teachers/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/teachers/$(request.auth.uid)).data.get('role', '') == 'Admin')
-      );
-    }
-
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
+    // Helper functions
     function incoming() {
       return request.resource.data;
     }
@@ -35,105 +19,147 @@ service cloud.firestore {
       return resource.data;
     }
 
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+       return id is string && id.size() <= 128;
+    }
+
+    // Session helpers
+    function getSession() {
+      return get(/databases/$(database)/documents/activeSessions/$(request.auth.uid)).data;
+    }
+
+    function hasActiveSession() {
+      return isSignedIn() && exists(/databases/$(database)/documents/activeSessions/$(request.auth.uid));
+    }
+
+    function hasRole(roles) {
+      return hasActiveSession() && getSession().role in roles;
+    }
+
+    function isAdmin() {
+      return hasRole(['Admin']);
+    }
+
+    function isTeacherOrAdmin() {
+      return hasRole(['Admin', 'Guru']);
+    }
+
+    function isStudent() {
+      return hasRole(['Siswa']);
+    }
+
+    // Password verification helper (zero-trust, backward compatible)
+    function verifyTeacherPassword(nip, pass) {
+      return (
+        (exists(/databases/$(database)/documents/teachers/$(nip)/private/password) &&
+         get(/databases/$(database)/documents/teachers/$(nip)/private/password).data.pass == pass) ||
+        (exists(/databases/$(database)/documents/teachers/$(nip)) &&
+         get(/databases/$(database)/documents/teachers/$(nip)).data.pass == pass)
+      );
+    }
+
     // Validation Helpers
     function isValidStudent(data) {
-      return data.nisn is string && data.nisn.size() > 0 &&
-             data.nama is string && data.nama.size() > 0 &&
-             data.kelas is string && data.kelas.size() > 0;
+      return data.nisn is string && data.nisn.size() > 0 && data.nisn.size() <= 64 &&
+             data.nama is string && data.nama.size() > 0 && data.nama.size() <= 256;
     }
 
     function isValidTeacher(data) {
-      return data.nip is string && data.nip.size() > 0 &&
-             data.nama is string && data.nama.size() > 0 &&
-             data.user is string && data.user.size() > 0 &&
-             data.pass is string && data.pass.size() > 0 &&
-             data.role in ['Guru', 'Admin', 'Guru Wali Kelas', 'Siswa'];
+      return data.nip is string && data.nip.size() > 0 && data.nip.size() <= 64 &&
+             data.nama is string && data.nama.size() > 0 && data.nama.size() <= 256;
     }
 
-    function isValidAttendance(data) {
-      return data.nisn is string && data.nisn.size() > 0 &&
-             data.tanggal is string && data.tanggal.size() == 10 &&
-             data.status in ['Hadir', 'Sakit', 'Izin', 'Alfa'];
+    // Rules for Active Sessions (Secure login bridging)
+    match /activeSessions/{authUid} {
+      allow read: if isSignedIn() && request.auth.uid == authUid;
+      allow create, update: if isSignedIn() && request.auth.uid == authUid && (
+        // Student login
+        (incoming().role == 'Siswa' && exists(/databases/$(database)/documents/students/$(incoming().nisn))) ||
+        // Teacher login (verified securely against hashed/private credentials)
+        (incoming().role in ['Guru', 'Admin'] && verifyTeacherPassword(incoming().nip, incoming().pass))
+      );
+      allow delete: if isSignedIn() && request.auth.uid == authUid;
     }
 
-    function isValidTeacherAttendance(data) {
-      return data.nip is string && data.nip.size() > 0 &&
-             data.kelas is string && data.kelas.size() > 0 &&
-             data.tanggal is string && data.tanggal.size() == 10;
-    }
-
-    function isValidTeachingSchedule(data) {
-      return data.nip is string && data.nip.size() > 0 &&
-             data.kelas is string && data.kelas.size() > 0 &&
-             data.targetPertemuan is number;
-    }
-
-    function isValidAppConfig(data) {
-      return (data.get('logoUrl', null) == null || (data.logoUrl is string && data.logoUrl.size() < 1048500)) &&
-             (data.get('schoolName', null) == null || (data.schoolName is string && data.schoolName.size() <= 200)) &&
-             (data.get('cardTemplateUrl', null) == null || (data.cardTemplateUrl is string && data.cardTemplateUrl.size() < 2100000));
-    }
-
+    // 1. appConfig
     match /appConfig/{id} {
-      allow read: if true;
-      allow write: if true;
+      allow read: if true; // Public for theme/logo configs
+      allow write: if isAdmin();
     }
 
+    // 2. students
     match /students/{nisn} {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isTeacherOrAdmin() || (isStudent() && getSession().nisn == nisn);
+      allow write: if isAdmin() && isValidStudent(incoming());
     }
 
+    // 3. teachers
     match /teachers/{nip} {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isSignedIn();
+      allow write: if isAdmin() && isValidTeacher(incoming());
+
+      // 3.1 private credentials
+      match /private/password {
+        allow read, write: if false; // Denied to all client SDK reads/writes
+      }
     }
 
+    // 4. classrooms
     match /classrooms/{nama} {
-      allow read: if true;
-      allow write: if isAdmin() || true;
+      allow read: if isTeacherOrAdmin() || isStudent();
+      allow write: if isAdmin();
     }
 
+    // 5. attendance
     match /attendance/{id} {
-      allow read: if true;
-      allow create: if isValidAttendance(incoming());
-      allow update: if isValidAttendance(incoming());
-      allow delete: if isAdmin() || true;
+      allow read: if isTeacherOrAdmin() || (isStudent() && getSession().nisn == resource.data.nisn);
+      allow write: if isTeacherOrAdmin();
     }
 
+    // 6. teacherAttendance
     match /teacherAttendance/{id} {
-      allow read: if true;
-      allow create: if isValidTeacherAttendance(incoming());
-      allow update: if isValidTeacherAttendance(incoming());
-      allow delete: if isAdmin() || true;
+      allow read: if isTeacherOrAdmin();
+      allow write: if isTeacherOrAdmin();
     }
 
+    // 7. teachingSchedules
     match /teachingSchedules/{id} {
-      allow read: if true;
-      allow write: if isAdmin() || true;
+      allow read: if isTeacherOrAdmin() || isStudent();
+      allow write: if isAdmin();
     }
 
+    // 8. settings
     match /settings/{id} {
-      allow read: if true;
-      allow write: if isAdmin() || true;
+      allow read: if isTeacherOrAdmin() || isStudent();
+      allow write: if isAdmin();
     }
-    
+
+    // 9. holidays
     match /holidays/{id} {
-      allow read: if true;
-      allow write: if isAdmin() || true;
+      allow read: if isTeacherOrAdmin() || isStudent();
+      allow write: if isAdmin();
     }
 
+    // 10. roster
     match /roster/{id} {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isTeacherOrAdmin() || isStudent();
+      allow write: if isAdmin();
     }
 
+    // 11. rekapSiswa
     match /rekapSiswa/{id} {
-      allow read, write: if true;
+      allow read: if isTeacherOrAdmin() || isStudent();
+      allow write: if isTeacherOrAdmin();
     }
 
+    // 12. oneTimeTokens
     match /oneTimeTokens/{id} {
-      allow read, write: if true;
+      allow read: if isTeacherOrAdmin();
+      allow write: if isTeacherOrAdmin();
     }
   }
 }

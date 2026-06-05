@@ -16,6 +16,7 @@ import {
   deleteField,
   getCountFromServer
 } from 'firebase/firestore';
+import { signInAnonymously } from 'firebase/auth';
 import { db, auth, defaultDb } from '../firebase';
 import { 
   Student, Teacher, Classroom, Attendance, TeacherAttendance, 
@@ -24,6 +25,14 @@ import {
 import { handleFirestoreError, OperationType } from '../lib/firebaseUtils';
 
 export const firestoreService = {
+  // Ensure Auth Utility
+  ensureAuth: async () => {
+    if (!auth.currentUser) {
+      console.log("[Auth] No current user, signing in anonymously on-demand...");
+      await signInAnonymously(auth);
+    }
+  },
+
   // Bootstrap Admin if empty
   bootstrapAdmin: async () => {
     console.log("[DEBUG] bootstrapAdmin triggered");
@@ -37,16 +46,22 @@ export const firestoreService = {
           nip: 'ADMIN001',
           nama: 'Administrator Utama',
           user: 'admin',
-          pass: 'admin123',
           role: 'Admin',
           kelas: ''
+        });
+        await setDoc(doc(db, 'teachers', 'ADMIN001', 'private', 'password'), {
+          pass: 'admin123'
         });
         await firestoreService.initializeSettings();
         console.log("[DEBUG] Bootstrap SUCCESS");
         return true;
       }
       return false;
-    } catch (e) {
+    } catch (e: any) {
+      if (e?.code === 'permission-denied' || String(e?.message).includes('permission')) {
+        console.log("[DEBUG] Database already bootstrapped and secured.");
+        return false;
+      }
       console.error("[DEBUG] Bootstrap error:", e);
       handleFirestoreError(e, OperationType.GET, "teachers");
       return false;
@@ -56,18 +71,56 @@ export const firestoreService = {
   // Auth Bridge
   checkLogin: async (identifier: string, p: string, r: Role): Promise<UserSession> => {
     try {
+      // Ensure we are signed in anonymously first
+      await firestoreService.ensureAuth();
+
       if (r === 'Siswa') {
-        const q = query(collection(db, 'students'), where('nisn', '==', identifier));
-        const snapshot = await getDocs(q);
-        if (snapshot.empty) return { success: false, message: "NISN tidak terdaftar.", role: 'Siswa', name: '', uid: '', kelas: '', isWali: false };
-        const data = snapshot.docs[0].data() as Student;
+        if (!auth.currentUser) {
+          return { success: false, message: "Koneksi ke Firebase gagal. Harap refresh halaman.", role: 'Siswa', name: '', uid: '', kelas: '', isWali: false };
+        }
+        
+        try {
+          await setDoc(doc(db, 'activeSessions', auth.currentUser.uid), {
+            uid: auth.currentUser.uid,
+            nisn: identifier,
+            role: 'Siswa'
+          });
+        } catch (sessionErr: any) {
+          console.error("[Auth] Student session write failed:", sessionErr);
+          return { success: false, message: "NISN tidak terdaftar atau bermasalah dengan Server.", role: 'Siswa', name: '', uid: '', kelas: '', isWali: false };
+        }
+
+        const studentDoc = await getDoc(doc(db, 'students', identifier));
+        if (!studentDoc.exists()) {
+          // Clean up the session if student doesn't exist
+          try {
+            await deleteDoc(doc(db, 'activeSessions', auth.currentUser.uid));
+          } catch (delErr) {}
+          return { success: false, message: "NISN tidak terdaftar.", role: 'Siswa', name: '', uid: '', kelas: '', isWali: false };
+        }
+        const data = studentDoc.data() as Student;
         return { success: true, name: data.nama, role: 'Siswa', uid: data.nisn, kelas: data.kelas, isWali: false };
       } else {
-        const q = query(collection(db, 'teachers'), where('user', '==', identifier), where('pass', '==', p));
+        const q = query(collection(db, 'teachers'), where('user', '==', identifier));
         const snapshot = await getDocs(q);
         if (snapshot.empty) return { success: false, message: "Username atau Password salah.", role: 'Guru', name: '', uid: '', kelas: '', isWali: false };
         const data = snapshot.docs[0].data() as Teacher;
         if (data.role !== r && data.role !== 'Admin') return { success: false, message: "Akses ditolak.", role: data.role, name: '', uid: '', kelas: '', isWali: false };
+        
+        if (auth.currentUser) {
+          try {
+            await setDoc(doc(db, 'activeSessions', auth.currentUser.uid), {
+              uid: auth.currentUser.uid,
+              nip: data.nip,
+              pass: p,
+              role: data.role
+            });
+          } catch (sessionErr: any) {
+            console.error("[Auth] Session write failed (incorrect password):", sessionErr);
+            return { success: false, message: "Username atau Password salah.", role: 'Guru', name: '', uid: '', kelas: '', isWali: false };
+          }
+        }
+
         return { 
           success: true, 
           name: data.nama, 
@@ -78,9 +131,19 @@ export const firestoreService = {
           jabatan: data.jabatan
         };
       }
+    } catch (e: any) {
+      console.error("[Auth] checkLogin error:", e);
+      return { success: false, message: "Error saat login (Pastikan koneksi internet stabil & Anonymous Auth aktif): " + (e?.message || e), role: 'Siswa', name: '', uid: '', kelas: '', isWali: false };
+    }
+  },
+
+  logout: async () => {
+    try {
+      if (auth.currentUser) {
+        await deleteDoc(doc(db, 'activeSessions', auth.currentUser.uid));
+      }
     } catch (e) {
-      handleFirestoreError(e, OperationType.GET, 'auth');
-      return { success: false, message: "Error.", role: 'Siswa', name: '', uid: '', kelas: '', isWali: false };
+      console.warn("[Auth] Quietly skipped activeSessions document deletion (might already be deleted or unauthenticated):", e);
     }
   },
 
@@ -107,7 +170,11 @@ export const firestoreService = {
   saveGuru: async (data: Teacher) => {
     try {
       if (!data.role) data.role = 'Guru';
-      await setDoc(doc(db, 'teachers', data.nip), data);
+      const { pass, ...publicData } = data;
+      await setDoc(doc(db, 'teachers', data.nip), publicData);
+      if (pass) {
+        await setDoc(doc(db, 'teachers', data.nip, 'private', 'password'), { pass });
+      }
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `teachers/${data.nip}`);
       throw e;
