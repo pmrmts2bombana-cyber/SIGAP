@@ -6319,9 +6319,7 @@ export default function App() {
     setConfirmModal({
       show: true,
       title: "Hapus data siswa?",
-      message:
-        "Data siswa dan riwayat absensinya akan dihapus permanen dari sistem.",
-      entityName: nama,
+      message: `Apakah Anda yakin menghapus data siswa ${nama}?`,
       onConfirm: async () => {
         toggleLoader(true);
         try {
@@ -6370,8 +6368,7 @@ export default function App() {
     setConfirmModal({
       show: true,
       title: "Hapus guru?",
-      message: "Data guru dan akses loginnya akan dihapus permanen.",
-      entityName: nama,
+      message: `Apakah Anda yakin menghapus data guru ${nama}?`,
       onConfirm: async () => {
         toggleLoader(true);
         try {
