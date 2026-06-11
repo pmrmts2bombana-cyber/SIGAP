@@ -27,29 +27,32 @@ service cloud.firestore {
        return id is string && id.size() <= 128;
     }
 
-    // Session helpers
-    function getSession() {
-      return get(/databases/$(database)/documents/activeSessions/$(request.auth.uid)).data;
-    }
-
+    // Session helpers and role verification
     function hasActiveSession() {
       return isSignedIn() && exists(/databases/$(database)/documents/activeSessions/$(request.auth.uid));
     }
 
-    function hasRole(roles) {
-      return hasActiveSession() && getSession().role in roles;
+    function getSession() {
+      return get(/databases/$(database)/documents/activeSessions/$(request.auth.uid)).data;
     }
 
     function isAdmin() {
-      return hasRole(['Admin']);
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/activeSessions/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/activeSessions/$(request.auth.uid)).data.role == 'Admin';
     }
 
     function isTeacherOrAdmin() {
-      return hasRole(['Admin', 'Guru']);
+      return isSignedIn() &&
+             exists(/databases/$(database)/documents/activeSessions/$(request.auth.uid)) &&
+             (get(/databases/$(database)/documents/activeSessions/$(request.auth.uid)).data.role == 'Admin' ||
+              get(/databases/$(database)/documents/activeSessions/$(request.auth.uid)).data.role == 'Guru');
     }
 
     function isStudent() {
-      return hasRole(['Siswa']);
+      return isSignedIn() &&
+             exists(/databases/$(database)/documents/activeSessions/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/activeSessions/$(request.auth.uid)).data.role == 'Siswa';
     }
 
     // Password verification helper (zero-trust, backward compatible)
@@ -80,7 +83,7 @@ service cloud.firestore {
         // Student login
         (incoming().role == 'Siswa' && exists(/databases/$(database)/documents/students/$(incoming().nisn))) ||
         // Teacher login (verified securely against hashed/private credentials)
-        (incoming().role in ['Guru', 'Admin'] && verifyTeacherPassword(incoming().nip, incoming().pass))
+        ((incoming().role == 'Guru' || incoming().role == 'Admin') && verifyTeacherPassword(incoming().nip, incoming().pass))
       );
       allow delete: if isSignedIn() && request.auth.uid == authUid;
     }
@@ -102,12 +105,16 @@ service cloud.firestore {
     // 3. teachers
     match /teachers/{nip} {
       allow read: if isSignedIn();
-      allow create, update: if isAdmin() && isValidTeacher(incoming());
+      allow create: if (isAdmin() || (nip == 'ADMIN001' && !exists(/databases/$(database)/documents/teachers/ADMIN001))) && isValidTeacher(incoming());
+      allow update: if (isAdmin() || (isTeacherOrAdmin() && string(getSession().nip) == string(nip))) && isValidTeacher(incoming());
       allow delete: if isAdmin();
 
       // 3.1 private credentials
       match /private/password {
-        allow read, write: if false; // Denied to all client SDK reads/writes
+        allow read: if false; // Denied to all client SDK reads
+        allow write: if isAdmin() || 
+                      (isTeacherOrAdmin() && string(getSession().nip) == string(nip)) ||
+                      (nip == 'ADMIN001' && !exists(/databases/$(database)/documents/teachers/ADMIN001));
       }
     }
 
