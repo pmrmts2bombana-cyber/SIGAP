@@ -15,6 +15,7 @@ export interface UserSession {
   jabatan?: string;
   message?: string;
   roleBackup?: Role;
+  pass?: string;
 }
 
 export interface Student {

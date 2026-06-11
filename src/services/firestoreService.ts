@@ -108,17 +108,42 @@ export const firestoreService = {
         const data = studentDoc.data() as Student;
         return { success: true, name: data.nama, role: 'Siswa', uid: data.nisn, kelas: data.kelas, isWali: false };
       } else {
-        const q = query(collection(db, 'teachers'), where('user', '==', identifier));
-        const snapshot = await getDocs(q);
-        if (snapshot.empty) return { success: false, message: "Username atau Password salah.", role: 'Guru', name: '', uid: '', kelas: '', isWali: false };
-        const data = snapshot.docs[0].data() as Teacher;
-        if (data.role !== r && data.role !== 'Admin') return { success: false, message: "Akses ditolak.", role: data.role, name: '', uid: '', kelas: '', isWali: false };
+        // Try looking up the teacher document by NIP (document ID) first
+        const docRef = doc(db, 'teachers', identifier);
+        const docSnap = await getDoc(docRef);
+        let data: Teacher | null = null;
+        let finalNip = "";
+
+        if (docSnap.exists()) {
+          data = docSnap.data() as Teacher;
+          finalNip = docSnap.id;
+        } else {
+          // Fallback to searching by user field
+          const q = query(collection(db, 'teachers'), where('user', '==', identifier));
+          const snapshot = await getDocs(q);
+          if (!snapshot.empty) {
+            const firstDoc = snapshot.docs[0];
+            data = firstDoc.data() as Teacher;
+            finalNip = firstDoc.id;
+          }
+        }
+
+        if (!data) {
+          return { success: false, message: "Username atau Password salah.", role: 'Guru', name: '', uid: '', kelas: '', isWali: false };
+        }
+
+        // Ensure finalNip is correct and stored in data
+        data.nip = finalNip;
+
+        if (data.role !== r && data.role !== 'Admin') {
+          return { success: false, message: "Akses ditolak.", role: data.role, name: '', uid: '', kelas: '', isWali: false };
+        }
         
         if (auth.currentUser) {
           try {
             await setDoc(doc(db, 'activeSessions', auth.currentUser.uid), {
               uid: auth.currentUser.uid,
-              nip: data.nip,
+              nip: finalNip,
               pass: p,
               role: data.role
             });
@@ -132,10 +157,11 @@ export const firestoreService = {
           success: true, 
           name: data.nama, 
           role: data.role, 
-          uid: data.nip,
+          uid: finalNip,
           kelas: data.kelas,
           isWali: !!data.kelas,
-          jabatan: data.jabatan
+          jabatan: data.jabatan,
+          pass: p
         };
       }
     } catch (e: any) {

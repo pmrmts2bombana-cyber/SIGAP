@@ -1949,6 +1949,9 @@ export default function App() {
     setIsUpdatingProfile(true);
     try {
       await firestoreService.saveGuru(editingProfileData);
+      if (editingProfileData.pass) {
+        setSession((prev) => prev ? { ...prev, pass: editingProfileData.pass } : null);
+      }
       refreshMasterData();
       alert("Profil berhasil diperbarui.");
       // Refresh teacher state if needed
@@ -2995,7 +2998,8 @@ export default function App() {
 
   const renderProfile = () => {
     const teacher = teachers.find((t) => t.nip === session?.uid);
-    const data = editingProfileData || teacher;
+    const enrichedTeacher = teacher ? { ...teacher, pass: teacher.pass || session?.pass || "" } : null;
+    const data = editingProfileData || enrichedTeacher;
 
     if (!data)
       return (
@@ -6339,14 +6343,24 @@ export default function App() {
     if (!editingGuru) return;
     toggleLoader(true);
     // Ensure kelas is only for Wali Kelas, and handle empty user/pass
+    const isNewGuru = !teachers.some((t) => t.nip === editingGuru.nip);
     const cleanedGuru = {
       ...editingGuru,
       jabatan: editingGuru.jabatan || "Guru",
       role: editingGuru.role || "Guru",
       user: editingGuru.user?.trim() || `guru${editingGuru.nip}`.toLowerCase(),
-      pass: editingGuru.pass?.trim() || "123456",
       kelas: editingGuru.jabatan === "Guru Wali Kelas" ? editingGuru.kelas : "",
-    };
+    } as any;
+
+    if (editingGuru.pass?.trim()) {
+      cleanedGuru.pass = editingGuru.pass.trim();
+    } else {
+      if (isNewGuru) {
+        cleanedGuru.pass = "123456";
+      } else {
+        delete cleanedGuru.pass;
+      }
+    }
     try {
       await firestoreService.saveGuru(cleanedGuru);
       refreshMasterData();
@@ -6876,10 +6890,12 @@ export default function App() {
     </AnimatePresence>
   );
 
-  const renderGuruModal = () => (
-    <AnimatePresence>
-      {showGuruModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+  const renderGuruModal = () => {
+    const isNewGuru = !editingGuru || !teachers.some((t) => t.nip === editingGuru.nip && t.nip !== "");
+    return (
+      <AnimatePresence>
+        {showGuruModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -7007,11 +7023,12 @@ export default function App() {
                     </div>
                     <div>
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest ml-1">
-                        Password
+                        Password {isNewGuru ? "" : "(Opsional)"}
                       </label>
                       <input
                         type="text"
-                        required
+                        required={isNewGuru}
+                        placeholder={isNewGuru ? "Masukkan password" : "Kosongkan jika tetap"}
                         value={editingGuru?.pass || ""}
                         onChange={(e) =>
                           setEditingGuru({
@@ -7019,7 +7036,7 @@ export default function App() {
                             pass: e.target.value,
                           })
                         }
-                        className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-3 font-bold"
+                        className="w-full bg-zinc-50 border-0 rounded-xl px-4 py-3 font-bold placeholder:text-zinc-300 placeholder:font-normal"
                       />
                     </div>
                   </div>
@@ -7046,6 +7063,7 @@ export default function App() {
       )}
     </AnimatePresence>
   );
+};
 
   const renderKelasModal = () => (
     <AnimatePresence>
@@ -11148,7 +11166,7 @@ export default function App() {
                                       jabatan: g.jabatan || "Guru",
                                       kelas: g.kelas || "",
                                       user: g.user || g.nip || "",
-                                      pass: g.pass || "123456",
+                                      pass: "",
                                       role: g.role || "Guru",
                                       foto: g.foto || "",
                                     });
