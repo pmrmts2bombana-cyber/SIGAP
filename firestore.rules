@@ -102,7 +102,8 @@ service cloud.firestore {
     // 3. teachers
     match /teachers/{nip} {
       allow read: if isSignedIn();
-      allow write: if isAdmin() && isValidTeacher(incoming());
+      allow create, update: if isAdmin() && isValidTeacher(incoming());
+      allow delete: if isAdmin();
 
       // 3.1 private credentials
       match /private/password {

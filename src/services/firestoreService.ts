@@ -24,6 +24,13 @@ import {
 } from '../types';
 import { handleFirestoreError, OperationType } from '../lib/firebaseUtils';
 
+// Memory Caching & Rate-Limiting for Morning Scan Peak Resource Management
+const holidayCache: { [tanggal: string]: { data: Holiday | null, expires: number } } = {};
+const settingsCache: { [hari: string]: { data: DaySetting | null, expires: number } } = {};
+const lastRekapUpdateTimes: { [tanggal: string]: number } = {};
+const CACHE_DURATION_MS = 10 * 60 * 1000; // Cache settings & holidays for 10 minutes
+const REKAP_THROTTLE_MS = 30000; // Process school-wide rekap at most once every 30 seconds per scanner device
+
 export const firestoreService = {
   // Ensure Auth Utility
   ensureAuth: async () => {
@@ -311,11 +318,20 @@ export const firestoreService = {
         return { success: false, message: "Hari Minggu adalah hari libur." };
       }
 
-      // Check for holiday
       const tanggal = now.toISOString().split('T')[0];
-      const holidayDoc = await getDoc(doc(db, 'holidays', tanggal));
-      if (holidayDoc.exists()) {
-        const holidayData = holidayDoc.data() as Holiday;
+      const nowMs = Date.now();
+
+      // 1. Memory Caching for Holiday status during peak rush
+      let holidayData: Holiday | null = null;
+      if (holidayCache[tanggal] && holidayCache[tanggal].expires > nowMs) {
+        holidayData = holidayCache[tanggal].data;
+      } else {
+        const holidayDoc = await getDoc(doc(db, 'holidays', tanggal));
+        holidayData = holidayDoc.exists() ? (holidayDoc.data() as Holiday) : null;
+        holidayCache[tanggal] = { data: holidayData, expires: nowMs + CACHE_DURATION_MS };
+      }
+
+      if (holidayData) {
         return { success: false, message: `Hari Libur: ${holidayData.keterangan}` };
       }
 
@@ -325,14 +341,21 @@ export const firestoreService = {
       const existing = await getDoc(doc(db, 'attendance', id));
       if (existing.exists()) return { success: false, message: "Anda sudah melakukan presensi hari ini." };
 
-      // Get settings for the day
-      const settingsDoc = await getDoc(doc(db, 'settings', dayName));
+      // 2. Memory Caching for School Start/End settings during peak rush
+      let settingsData: DaySetting | null = null;
+      if (settingsCache[dayName] && settingsCache[dayName].expires > nowMs) {
+        settingsData = settingsCache[dayName].data;
+      } else {
+        const settingsDoc = await getDoc(doc(db, 'settings', dayName));
+        settingsData = settingsDoc.exists() ? (settingsDoc.data() as DaySetting) : null;
+        settingsCache[dayName] = { data: settingsData, expires: nowMs + CACHE_DURATION_MS };
+      }
+
       let cutoffMasuk = "07:15"; // Default
       let cutoffPulang = "14:00"; // Default
-      if (settingsDoc.exists()) {
-        const s = settingsDoc.data() as DaySetting;
-        if (s.masuk) cutoffMasuk = s.masuk;
-        if (s.pulang) cutoffPulang = s.pulang;
+      if (settingsData) {
+        if (settingsData.masuk) cutoffMasuk = settingsData.masuk;
+        if (settingsData.pulang) cutoffPulang = settingsData.pulang;
       }
 
       // Calculate total minutes for robust comparison
@@ -359,7 +382,12 @@ export const firestoreService = {
           keterangan: 'Absensi gagal sudah jam pulang'
         };
         await setDoc(doc(db, 'attendance', id), record);
-        await firestoreService.updateRekapSiswa(tanggal);
+        
+        // Non-blocking Rekap compilation
+        firestoreService.updateRekapSiswa(tanggal).catch((err) => {
+          console.warn("[SIGAP] Passive rekapSiswa update background warning:", err);
+        });
+
         return { 
           success: false, 
           status: 'Alfa',
@@ -391,8 +419,15 @@ export const firestoreService = {
         keterangan: formatLateDescription(terlambat)
       };
 
+      // 3. Save core attendance document synchronously
       await setDoc(doc(db, 'attendance', id), record);
-      await firestoreService.updateRekapSiswa(tanggal);
+      
+      // 4. Trigger school-wide dashboard statistics compiling asynchronously (Non-blocking background thread)
+      // This increases scanning throughput to thousands of students, preventing write-contention lockups!
+      firestoreService.updateRekapSiswa(tanggal).catch((err) => {
+        console.warn("[SIGAP] Passive rekapSiswa update background warning:", err);
+      });
+
       const lateMsg = terlambat > 0 ? ` (Terlambat ${formatLateDescription(terlambat)})` : ' (Tepat Waktu)';
       return { 
         success: true, 
@@ -699,6 +734,15 @@ export const firestoreService = {
   },
 
   updateRekapSiswa: async (tanggal: string) => {
+    // Implement rate-limiting throttle on each device to prevent heavy firestore read query cascades during morning rush hours
+    const nowMs = Date.now();
+    const lastUpdate = lastRekapUpdateTimes[tanggal] || 0;
+    if (nowMs - lastUpdate < REKAP_THROTTLE_MS) {
+      console.log(`[SIGAP] Skipping updateRekapSiswa for date ${tanggal} (throttled). Last update was ${Math.round((nowMs - lastUpdate) / 1000)}s ago.`);
+      return;
+    }
+    lastRekapUpdateTimes[tanggal] = nowMs;
+
     try {
       // 1. Get total students count
       const totalSiswaSnap = await getCountFromServer(query(collection(db, 'students')));
